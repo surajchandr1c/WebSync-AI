@@ -17,6 +17,7 @@ from coordinator.schemas.job import (
 from coordinator.ws.manager import ws_manager, worker_ws_manager
 from coordinator.scheduler.engine import scheduler_engine
 from coordinator.services.dispatcher_service import DispatcherService
+from coordinator.config import settings
 
 
 def job_to_response(job: Job) -> JobResponse:
@@ -44,6 +45,15 @@ class JobService:
     async def create_job(
         db: AsyncSession, payload: JobCreateRequest, user_id: Optional[str] = None
     ) -> JobResponse:
+        # Enforce coordinator queue limit
+        count_stmt = select(func.count(Job.job_id)).where(Job.status == JobState.QUEUED.value)
+        queued_count = (await db.execute(count_stmt)).scalar() or 0
+        if queued_count >= settings.MAX_QUEUED_JOBS:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Coordinator queue capacity reached ({settings.MAX_QUEUED_JOBS} queued jobs limit).",
+            )
+
         now = datetime.now(timezone.utc)
         req_dict = payload.requirements.model_dump() if payload.requirements else {}
 
@@ -90,7 +100,12 @@ class JobService:
         return job_to_response(job)
 
     @staticmethod
-    async def get_job(db: AsyncSession, job_id: str) -> JobResponse:
+    async def get_job(
+        db: AsyncSession,
+        job_id: str,
+        requesting_user_id: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> JobResponse:
         stmt = select(Job).where(Job.job_id == job_id)
         job = (await db.execute(stmt)).scalar_one_or_none()
         if not job:
@@ -98,6 +113,13 @@ class JobService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Job '{job_id}' not found.",
             )
+        # Authorization check: only job creator or admin can inspect job
+        if requesting_user_id and job.created_by_user_id and not is_admin:
+            if job.created_by_user_id != requesting_user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You are not authorized to view this job.",
+                )
         return job_to_response(job)
 
     @staticmethod
@@ -105,6 +127,8 @@ class JobService:
         db: AsyncSession,
         status_filter: Optional[str] = None,
         job_type_filter: Optional[str] = None,
+        requesting_user_id: Optional[str] = None,
+        is_admin: bool = False,
         skip: int = 0,
         limit: int = 50,
     ) -> Tuple[List[JobResponse], int]:
@@ -113,6 +137,10 @@ class JobService:
             stmt = stmt.where(Job.status == status_filter.upper())
         if job_type_filter:
             stmt = stmt.where(Job.job_type == job_type_filter)
+        if requesting_user_id and not is_admin:
+            stmt = stmt.where(
+                (Job.created_by_user_id == requesting_user_id) | (Job.created_by_user_id.is_(None))
+            )
 
         count_stmt = select(func.count()).select_from(stmt.subquery())
         total = (await db.execute(count_stmt)).scalar() or 0
@@ -280,7 +308,12 @@ class JobService:
         return job_to_response(job)
 
     @staticmethod
-    async def get_job_result(db: AsyncSession, job_id: str) -> JobResultResponse:
+    async def get_job_result(
+        db: AsyncSession,
+        job_id: str,
+        requesting_user_id: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> JobResultResponse:
         stmt = select(Job).where(Job.job_id == job_id)
         job = (await db.execute(stmt)).scalar_one_or_none()
         if not job:
@@ -288,6 +321,14 @@ class JobService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Job '{job_id}' not found.",
             )
+
+        # Authorization check: only job creator or admin can view results
+        if requesting_user_id and job.created_by_user_id and not is_admin:
+            if job.created_by_user_id != requesting_user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You are not authorized to view results for this job.",
+                )
 
         if job.status not in (JobState.COMPLETED.value, JobState.FAILED.value, JobState.CANCELLED.value):
             raise HTTPException(
@@ -310,10 +351,21 @@ class JobService:
         db: AsyncSession,
         job_id: Optional[str] = None,
         event_type: Optional[str] = None,
+        requesting_user_id: Optional[str] = None,
+        is_admin: bool = False,
         skip: int = 0,
         limit: int = 50,
     ) -> Tuple[List[JobEventResponse], int]:
-        """Retrieve paginated audit log events."""
+        """Retrieve paginated audit log events with ownership validation."""
+        if job_id and requesting_user_id and not is_admin:
+            job_stmt = select(Job).where(Job.job_id == job_id)
+            job = (await db.execute(job_stmt)).scalar_one_or_none()
+            if job and job.created_by_user_id and job.created_by_user_id != requesting_user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You are not authorized to view audit events for this job.",
+                )
+
         stmt = select(JobEvent)
         count_stmt = select(func.count(JobEvent.id))
 

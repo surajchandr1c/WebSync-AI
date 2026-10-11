@@ -5,25 +5,27 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from coordinator.config import settings
+from coordinator.core.logging_config import setup_coordinator_logging
 from coordinator.db.session import init_db
 from coordinator.api.router import api_router, ws_router
 
-# Configure structured logging
-logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# Configure structured logging with sensitive token redaction filter
+setup_coordinator_logging(settings.LOG_LEVEL)
 logger = logging.getLogger("coordinator")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing WebSync AI Coordinator v0.2.0 in '%s' mode", settings.ENVIRONMENT)
-    # Initialize DB schemas
+    # Initialize DB schemas and run startup recovery
     try:
         await init_db()
+        from coordinator.db.session import async_session_factory
+        from coordinator.scheduler.engine import scheduler_engine
+        async with async_session_factory() as db:
+            await scheduler_engine.recover_jobs_on_coordinator_startup(db)
     except Exception as e:
-        logger.error("Database schema initialization encountered error: %s", str(e))
+        logger.error("Database schema initialization / startup recovery encountered error: %s", str(e))
 
     logger.info("CORS origins configured: %s", settings.cors_origins)
     yield
@@ -60,6 +62,21 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={"detail": "Request validation failed", "errors": errors},
+    )
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    """Sanitize internal errors to prevent stack trace or raw SQL leakage in responses."""
+    logger.error("Unhandled exception processing %s %s: %s", request.method, request.url.path, str(exc), exc_info=True)
+    if settings.ENVIRONMENT == "production":
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "An internal server error occurred. Please contact the administrator."},
+        )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": f"Internal server error: {str(exc)}"},
     )
 
 

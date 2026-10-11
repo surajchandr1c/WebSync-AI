@@ -24,9 +24,20 @@ class CoordinatorSettings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     WORKER_TOKEN_EXPIRE_MINUTES: int = 1440
 
-    # Worker Settings
+    # Worker Enrollment & Credentials
     WORKER_HEARTBEAT_TIMEOUT_SECONDS: int = 30
     WORKER_DEV_AUTH_TOKEN: str = "dev-worker-secret-token"
+    WORKER_ENROLLMENT_SECRET: str = ""
+
+    # Resource Limits & Quotas
+    MAX_QUEUED_JOBS: int = 1000
+    MAX_JOB_INPUT_BYTES: int = 2 * 1024 * 1024  # 2MB
+    MAX_WS_MESSAGE_SIZE_BYTES: int = 2 * 1024 * 1024  # 2MB
+
+    # Rate Limiting
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_LOGIN_PER_MINUTE: int = 10
+    RATE_LIMIT_REGISTER_PER_MINUTE: int = 20
 
     # CORS
     COORDINATOR_ALLOWED_ORIGINS: str = (
@@ -47,7 +58,7 @@ class CoordinatorSettings(BaseSettings):
     @model_validator(mode="after")
     def validate_production_secrets(self) -> "CoordinatorSettings":
         if self.ENVIRONMENT.lower() == "production":
-            insecure_markers = ["dev-insecure", "change-this", "secret", "admin"]
+            insecure_markers = ["dev-insecure", "change-this", "secret", "admin", "test-secret"]
             if (
                 any(marker in self.COORDINATOR_SECRET_KEY.lower() for marker in insecure_markers)
                 or len(self.COORDINATOR_SECRET_KEY) < 32
@@ -56,7 +67,24 @@ class CoordinatorSettings(BaseSettings):
                     "COORDINATOR_SECRET_KEY must be a cryptographically secure key "
                     "(at least 32 characters) when running in production."
                 )
+            if self.WORKER_DEV_AUTH_TOKEN == "dev-worker-secret-token":
+                raise ValueError(
+                    "WORKER_DEV_AUTH_TOKEN must not use the default development token in production."
+                )
+            if not self.WORKER_ENROLLMENT_SECRET or len(self.WORKER_ENROLLMENT_SECRET) < 16:
+                raise ValueError(
+                    "WORKER_ENROLLMENT_SECRET must be configured with a secure key (min 16 chars) in production."
+                )
+            if "*" in self.COORDINATOR_ALLOWED_ORIGINS:
+                raise ValueError(
+                    "Wildcard '*' CORS origins are strictly forbidden in production."
+                )
         return self
+
+
+def validate_production_secrets(cfg: CoordinatorSettings) -> CoordinatorSettings:
+    """Explicit validator function for testing or deployment sanity-checks."""
+    return cfg.validate_production_secrets()
 
 
 settings = CoordinatorSettings()

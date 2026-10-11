@@ -202,6 +202,42 @@ class WorkerService:
         return worker_to_response(worker)
 
     @staticmethod
+    async def revoke_worker(db: AsyncSession, worker_id: str) -> WorkerResponse:
+        """Administratively revoke a worker node's credentials and disconnect it."""
+        stmt = select(Worker).where(Worker.worker_id == worker_id)
+        worker = (await db.execute(stmt)).scalar_one_or_none()
+        if not worker:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Worker '{worker_id}' not found.",
+            )
+
+        worker.is_revoked = True
+        worker.connection_status = "offline"
+        await db.commit()
+        await db.refresh(worker)
+
+        # Forcibly disconnect live WebSocket
+        from coordinator.ws.manager import worker_ws_manager
+        await worker_ws_manager.disconnect_worker(worker_id, code=1008, reason="Worker credentials revoked")
+
+        # Clean up assigned jobs
+        from coordinator.scheduler.engine import scheduler_engine
+        await scheduler_engine.handle_worker_disconnect_cleanup(db, worker_id)
+
+        # Broadcast revocation event
+        await ws_manager.broadcast(
+            "worker.revoked",
+            {
+                "worker_id": worker.worker_id,
+                "is_revoked": True,
+                "status": "offline",
+            },
+        )
+
+        return worker_to_response(worker)
+
+    @staticmethod
     async def get_worker(db: AsyncSession, worker_id: str) -> WorkerResponse:
         stmt = select(Worker).where(Worker.worker_id == worker_id)
         worker = (await db.execute(stmt)).scalar_one_or_none()

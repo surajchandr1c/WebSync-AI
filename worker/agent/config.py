@@ -59,6 +59,43 @@ class WorkerSettings(BaseSettings):
         description="Maximum concurrent jobs allowed on this node",
     )
 
+    # Resource Sharing & Node Owner Limits
+    WORKER_MAX_CPU_PERCENT: float = Field(
+        default=90.0,
+        ge=10.0,
+        le=100.0,
+        validation_alias=AliasChoices("WORKER_MAX_CPU_PERCENT"),
+        description="CPU percent limit above which node temporarily pauses job acceptance",
+    )
+    WORKER_MIN_AVAILABLE_RAM_MB: int = Field(
+        default=512,
+        ge=64,
+        validation_alias=AliasChoices("WORKER_MIN_AVAILABLE_RAM_MB"),
+        description="Minimum available RAM in megabytes required to accept new jobs",
+    )
+    WORKER_PAUSE_SHARING: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("WORKER_PAUSE_SHARING"),
+        description="Pause sharing toggle allowing owner to temporarily refuse incoming jobs",
+    )
+    WORKER_MAX_INPUT_BYTES: int = Field(
+        default=2 * 1024 * 1024,
+        ge=1024,
+        validation_alias=AliasChoices("WORKER_MAX_INPUT_BYTES"),
+        description="Maximum job input payload size allowed on worker node (2MB)",
+    )
+    WORKER_MAX_OUTPUT_BYTES: int = Field(
+        default=100 * 1024,
+        ge=1024,
+        validation_alias=AliasChoices("WORKER_MAX_OUTPUT_BYTES"),
+        description="Maximum job output size allowed before truncation (100KB)",
+    )
+    WORKER_VERIFY_TLS: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("WORKER_VERIFY_TLS"),
+        description="Verify coordinator TLS certificates when connecting via HTTPS/WSS",
+    )
+
     # Networking & Timeouts
     WEB_SYNC_CONNECT_TIMEOUT_SECONDS: float = Field(
         default=10.0,

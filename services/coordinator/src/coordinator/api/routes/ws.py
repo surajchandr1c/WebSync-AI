@@ -10,6 +10,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 import jwt
 from sqlalchemy import select
 
+from coordinator.config import settings
 from coordinator.ws.manager import ws_manager, worker_ws_manager
 from coordinator.core.security import decode_token
 from coordinator.db.session import async_session_factory
@@ -37,7 +38,10 @@ async def websocket_dashboard(
     # Optional token verification for authorized dashboard clients
     if token:
         try:
-            decode_token(token)
+            payload = decode_token(token)
+            if payload.get("type") != "user":
+                await websocket.close(code=1008, reason="Dashboard requires user token")
+                return
         except jwt.PyJWTError:
             await websocket.close(code=1008, reason="Invalid token")
             return
@@ -47,6 +51,8 @@ async def websocket_dashboard(
         while True:
             # Keep-alive heartbeat listener
             msg = await websocket.receive_text()
+            if len(msg) > settings.MAX_WS_MESSAGE_SIZE_BYTES:
+                continue
             if msg == "ping":
                 await websocket.send_text("pong")
     except WebSocketDisconnect:
@@ -68,12 +74,31 @@ async def websocket_worker(
 
     try:
         payload = decode_token(token)
+        if payload.get("type") != "worker":
+            await websocket.close(code=1008, reason="Invalid token type for worker channel")
+            return
         worker_id = payload.get("sub")
         if not worker_id:
             await websocket.close(code=1008, reason="Invalid token subject")
             return
     except Exception:
         await websocket.close(code=1008, reason="Invalid worker authentication token")
+        return
+
+    # Check worker existence and revocation before accepting connection
+    try:
+        async with async_session_factory() as db:
+            stmt = select(Worker).where(Worker.worker_id == worker_id)
+            worker = (await db.execute(stmt)).scalar_one_or_none()
+            if not worker:
+                await websocket.close(code=1008, reason="Worker not registered")
+                return
+            if worker.is_revoked:
+                await websocket.close(code=1008, reason="Worker credentials revoked")
+                return
+    except Exception as e:
+        logger.error("DB error validating worker '%s': %s", worker_id, str(e))
+        await websocket.close(code=1011, reason="Database error")
         return
 
     await websocket.accept()
@@ -150,6 +175,18 @@ async def websocket_worker(
     try:
         while True:
             raw_msg = await websocket.receive_text()
+            if len(raw_msg) > settings.MAX_WS_MESSAGE_SIZE_BYTES:
+                err_env = BaseMessageEnvelope.create(
+                    msg_type=ProtocolMessageType.PROTOCOL_ERROR.value,
+                    worker_id=worker_id,
+                    payload={
+                        "error_code": "MESSAGE_TOO_LARGE",
+                        "message": f"Message exceeded maximum allowed size of {settings.MAX_WS_MESSAGE_SIZE_BYTES} bytes.",
+                    },
+                )
+                await websocket.send_text(err_env.to_json())
+                continue
+
             if raw_msg == "ping":
                 await websocket.send_text("pong")
                 continue

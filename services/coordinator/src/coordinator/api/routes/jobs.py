@@ -45,12 +45,21 @@ async def list_jobs(
     job_type: Optional[str] = Query(None, description="Filter by workload type: matrix_multiply, data_processing, image_processing"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> JobListResponse:
     """Retrieve paginated jobs."""
+    user_id = current_user.id if current_user else None
+    is_admin = (current_user.role == "admin") if current_user else False
     skip = (page - 1) * page_size
     items, total = await JobService.list_jobs(
-        db=db, status_filter=status, job_type_filter=job_type, skip=skip, limit=page_size
+        db=db,
+        status_filter=status,
+        job_type_filter=job_type,
+        requesting_user_id=user_id,
+        is_admin=is_admin,
+        skip=skip,
+        limit=page_size,
     )
     return JobListResponse(items=items, total=total, page=page, page_size=page_size)
 
@@ -62,10 +71,15 @@ async def list_jobs(
 )
 async def get_job(
     job_id: str,
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> JobResponse:
     """Retrieve details for specific job ID."""
-    return await JobService.get_job(db=db, job_id=job_id)
+    user_id = current_user.id if current_user else None
+    is_admin = (current_user.role == "admin") if current_user else False
+    return await JobService.get_job(
+        db=db, job_id=job_id, requesting_user_id=user_id, is_admin=is_admin
+    )
 
 
 @router.post(
@@ -94,10 +108,15 @@ async def cancel_job(
 )
 async def get_job_result(
     job_id: str,
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> JobResultResponse:
     """Retrieve output, exit code, and execution summary for a completed or failed job."""
-    return await JobService.get_job_result(db=db, job_id=job_id)
+    user_id = current_user.id if current_user else None
+    is_admin = (current_user.role == "admin") if current_user else False
+    return await JobService.get_job_result(
+        db=db, job_id=job_id, requesting_user_id=user_id, is_admin=is_admin
+    )
 
 
 @router.patch(
@@ -109,6 +128,7 @@ async def get_job_result(
 async def update_job_status(
     job_id: str,
     payload: JobStatusUpdateRequest,
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> JobResponse:
     """Update job status with strict transition validation."""
@@ -124,11 +144,19 @@ async def get_job_events(
     job_id: str,
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> JobEventListResponse:
     """Retrieve audit history and transitions for a specific job."""
+    user_id = current_user.id if current_user else None
+    is_admin = (current_user.role == "admin") if current_user else False
     skip = (page - 1) * page_size
     items, total = await JobService.list_events(
-        db=db, job_id=job_id, skip=skip, limit=page_size
+        db=db,
+        job_id=job_id,
+        requesting_user_id=user_id,
+        is_admin=is_admin,
+        skip=skip,
+        limit=page_size,
     )
     return JobEventListResponse(items=items, total=total, page=page, page_size=page_size)

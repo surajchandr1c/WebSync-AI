@@ -111,6 +111,18 @@ class WorkerConnectionManager:
             await self.unregister_worker(worker_id)
             return False
 
+    async def disconnect_worker(
+        self, worker_id: str, code: int = 1008, reason: str = "Worker revoked"
+    ) -> None:
+        """Forcibly close and unregister a worker's active WebSocket connection."""
+        async with self._lock:
+            ws = self._worker_connections.pop(worker_id, None)
+        if ws:
+            try:
+                await ws.close(code=code, reason=reason)
+            except Exception:
+                pass
+
     async def cancel_job_on_worker(
         self, worker_id: str, job_id: str, reason: Optional[str] = None
     ) -> bool:

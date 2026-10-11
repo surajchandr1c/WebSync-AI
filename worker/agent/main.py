@@ -73,6 +73,7 @@ class WorkerDaemon:
         async with CoordinatorTransport(
             base_url=self.cfg.WEB_SYNC_COORDINATOR_URL,
             timeout_seconds=self.cfg.WEB_SYNC_CONNECT_TIMEOUT_SECONDS,
+            verify_tls=self.cfg.WORKER_VERIFY_TLS,
         ) as transport:
             # 1. Register with coordinator
             reg_manager = RegistrationManager(settings=self.cfg, transport=transport)

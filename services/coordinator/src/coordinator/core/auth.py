@@ -76,13 +76,14 @@ async def get_optional_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
     db: AsyncSession = Depends(get_db),
 ) -> Optional[User]:
-    """Optionally resolve current user if bearer credentials provided."""
+    """Optionally resolve current user if bearer credentials provided.
+    
+    If credentials are provided but invalid or unauthorized, raises HTTPException.
+    Only returns None when no authorization header is present.
+    """
     if not credentials:
         return None
-    try:
-        return await get_current_user(credentials=credentials, db=db)
-    except HTTPException:
-        return None
+    return await get_current_user(credentials=credentials, db=db)
 
 
 async def get_current_worker(
@@ -143,19 +144,27 @@ async def verify_worker_registration_auth(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
 ) -> bool:
     """Verify authorization to register a worker."""
-    # 1. Check development pre-shared token if allowed
-    if x_worker_token and x_worker_token == settings.WORKER_DEV_AUTH_TOKEN:
-        return True
+    is_prod = (settings.ENVIRONMENT.lower() == "production")
 
-    # 2. Check if bearer token matches dev token
-    if credentials and credentials.credentials == settings.WORKER_DEV_AUTH_TOKEN:
-        return True
+    # 1. Check development pre-shared token only when NOT in production mode
+    if not is_prod:
+        if x_worker_token and x_worker_token == settings.WORKER_DEV_AUTH_TOKEN:
+            return True
+        if credentials and credentials.credentials == settings.WORKER_DEV_AUTH_TOKEN:
+            return True
+
+    # 2. Check dedicated production worker enrollment secret if configured
+    if settings.WORKER_ENROLLMENT_SECRET:
+        if x_worker_token and x_worker_token == settings.WORKER_ENROLLMENT_SECRET:
+            return True
+        if credentials and credentials.credentials == settings.WORKER_ENROLLMENT_SECRET:
+            return True
 
     # 3. Check if bearer token is a valid operator or admin user JWT
     if credentials:
         try:
             payload = decode_token(credentials.credentials)
-            if payload.get("type") == "user":
+            if payload.get("type") == "user" and payload.get("role") in ("admin", "operator"):
                 return True
         except jwt.PyJWTError:
             pass

@@ -32,15 +32,17 @@ def calculate_backoff(attempt: int, base: float = 1.0, max_cap: float = 30.0) ->
 class CoordinatorTransport:
     """Outbound HTTP transport client communicating with the WebSync AI Coordinator."""
 
-    def __init__(self, base_url: str, timeout_seconds: float = 10.0):
+    def __init__(self, base_url: str, timeout_seconds: float = 10.0, verify_tls: bool = True):
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.verify_tls = verify_tls
         self._client: Optional[httpx.AsyncClient] = None
 
     async def __aenter__(self) -> "CoordinatorTransport":
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=httpx.Timeout(self.timeout_seconds),
+            verify=self.verify_tls,
             headers={"User-Agent": "WebSync-Worker-Agent/0.3.0"},
         )
         return self

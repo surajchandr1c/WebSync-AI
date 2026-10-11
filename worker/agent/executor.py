@@ -1,7 +1,12 @@
 import asyncio
+import json
 import logging
 import time
 from typing import Dict, Any, Optional
+
+import psutil
+
+from worker.agent.config import settings
 
 logger = logging.getLogger("websync-worker.executor")
 
@@ -39,7 +44,14 @@ class WorkloadExecutionResult:
 
 
 class ModularJobExecutor:
-    """Safe, modular workload executor enforcing strict handler isolation without eval."""
+    """Safe, modular workload executor enforcing strict handler isolation without eval.
+    
+    IMPORTANT SECURITY NOTICE:
+    Pure Python handlers enforce deterministic input bounds validation and algorithmic safety,
+    but do NOT provide kernel-level containerization or a virtualized sandbox (such as Docker,
+    Firecracker, or gVisor). Handlers execute within the worker Python process with the permissions
+    of the running OS user. Never execute arbitrary code or shell strings without container isolation.
+    """
 
     def __init__(self, max_concurrent_jobs: int = 2):
         self.max_concurrent_jobs = max_concurrent_jobs
@@ -67,6 +79,18 @@ class ModularJobExecutor:
         timeout_seconds: int = 300,
     ) -> WorkloadExecutionResult:
         """Execute validated workload adhering strictly to safe registered handlers."""
+        # 1. Owner pause toggle check
+        if getattr(settings, "WORKER_PAUSE_SHARING", False):
+            return WorkloadExecutionResult(
+                job_id=job_id,
+                job_type=job_type,
+                exit_code=-1,
+                output="",
+                duration_seconds=0.0,
+                error="Node owner has paused workload sharing on this worker",
+            )
+
+        # 2. Concurrency limit check
         if len(self._active_jobs) >= self.max_concurrent_jobs:
             return WorkloadExecutionResult(
                 job_id=job_id,
@@ -76,6 +100,57 @@ class ModularJobExecutor:
                 duration_seconds=0.0,
                 error=f"Node concurrency limit reached (max: {self.max_concurrent_jobs})",
             )
+
+        # 3. Payload size check
+        try:
+            serialized_input = json.dumps(input_payload)
+            max_input = getattr(settings, "WORKER_MAX_INPUT_BYTES", 2 * 1024 * 1024)
+            if len(serialized_input.encode("utf-8")) > max_input:
+                return WorkloadExecutionResult(
+                    job_id=job_id,
+                    job_type=job_type,
+                    exit_code=-1,
+                    output="",
+                    duration_seconds=0.0,
+                    error=f"Input payload exceeds maximum allowed size ({max_input} bytes)",
+                )
+        except Exception as e:
+            return WorkloadExecutionResult(
+                job_id=job_id,
+                job_type=job_type,
+                exit_code=-1,
+                output="",
+                duration_seconds=0.0,
+                error=f"Failed to validate input payload: {str(e)}",
+            )
+
+        # 4. Host resource threshold checks (CPU & RAM)
+        try:
+            cpu_pct = psutil.cpu_percent(interval=None)
+            max_cpu = getattr(settings, "WORKER_MAX_CPU_PERCENT", 90.0)
+            if cpu_pct > max_cpu:
+                return WorkloadExecutionResult(
+                    job_id=job_id,
+                    job_type=job_type,
+                    exit_code=-1,
+                    output="",
+                    duration_seconds=0.0,
+                    error=f"Host CPU utilization too high ({cpu_pct:.1f}% > {max_cpu:.1f}%)",
+                )
+
+            avail_ram_mb = psutil.virtual_memory().available / (1024 * 1024)
+            min_ram_mb = getattr(settings, "WORKER_MIN_AVAILABLE_RAM_MB", 512)
+            if avail_ram_mb < min_ram_mb:
+                return WorkloadExecutionResult(
+                    job_id=job_id,
+                    job_type=job_type,
+                    exit_code=-1,
+                    output="",
+                    duration_seconds=0.0,
+                    error=f"Insufficient available host RAM ({avail_ram_mb:.0f}MB < {min_ram_mb}MB)",
+                )
+        except Exception as e:
+            logger.debug("Host telemetry threshold check skipped: %s", str(e))
 
         start_time = time.perf_counter()
         task = asyncio.current_task()
@@ -90,6 +165,12 @@ class ModularJobExecutor:
                 timeout=timeout_seconds,
             )
             elapsed = time.perf_counter() - start_time
+
+            # Enforce output length limit
+            max_output = getattr(settings, "WORKER_MAX_OUTPUT_BYTES", 100 * 1024)
+            if len(output) > max_output:
+                output = output[:max_output] + f"\n... [Output truncated at {max_output} bytes limit]"
+
             return WorkloadExecutionResult(
                 job_id=job_id,
                 job_type=job_type,

@@ -35,7 +35,7 @@ class JobRequirements(BaseModel):
     min_ram_mb: int = Field(default=512, ge=0, description="Minimum RAM in Megabytes")
     min_ram_bytes: Optional[int] = Field(None, ge=0, description="Minimum RAM in exact bytes (overrides min_ram_mb if specified)")
     gpu_required: bool = Field(default=False, description="Whether workload requires GPU hardware")
-    timeout_seconds: int = Field(default=300, ge=1, description="Maximum execution timeout in seconds")
+    timeout_seconds: int = Field(default=300, ge=1, le=3600, description="Maximum execution timeout in seconds (capped at 3600s)")
 
     def get_min_ram_bytes(self) -> int:
         if self.min_ram_bytes is not None:
@@ -62,6 +62,13 @@ class JobCreateRequest(BaseModel):
     def validate_input_payload(cls, v: Dict[str, Any]) -> Dict[str, Any]:
         if not v:
             raise ValueError("input_payload must not be empty.")
+        import json
+        try:
+            payload_bytes = len(json.dumps(v))
+        except Exception as e:
+            raise ValueError(f"input_payload must be JSON-serializable: {str(e)}")
+        if payload_bytes > 2 * 1024 * 1024:
+            raise ValueError(f"input_payload exceeds maximum size limit of 2MB ({payload_bytes} bytes).")
         return v
 
 

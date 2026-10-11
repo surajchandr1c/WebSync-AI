@@ -9,7 +9,9 @@ from typing import Dict, Any, List, Optional, Callable
 import uuid
 import websockets
 from websockets.exceptions import ConnectionClosed
+import psutil
 
+from worker.agent.config import settings
 from worker.agent.executor import ModularJobExecutor, WorkloadExecutionResult
 
 logger = logging.getLogger("websync-worker.ws")
@@ -94,9 +96,20 @@ class WorkerWebSocketClient:
         while self._running:
             try:
                 logger.info("Connecting to coordinator WebSocket at %s...", self.coordinator_url)
+                
+                # Configure TLS context for secure WebSocket transport
+                ssl_context = None
+                if self.ws_url.startswith("wss://"):
+                    import ssl
+                    ssl_context = ssl.create_default_context()
+                    if not getattr(settings, "WORKER_VERIFY_TLS", True):
+                        ssl_context.check_hostname = False
+                        ssl_context.verify_mode = ssl.CERT_NONE
+
                 # websockets 12+ API compatible
                 async with websockets.connect(
                     self.ws_url,
+                    ssl=ssl_context,
                     ping_interval=20,
                     ping_timeout=15,
                     close_timeout=5,
@@ -193,7 +206,74 @@ class WorkerWebSocketClient:
                 logger.debug("Job '%s' is already executing. Ignoring duplicate dispatch.", job_id)
                 return
 
-        # 1. Verify workload compatibility
+        # 1. Check owner pause status
+        if getattr(settings, "WORKER_PAUSE_SHARING", False):
+            rejection_reason = "Worker resource sharing paused by node owner."
+            logger.warning("Rejecting job '%s': %s", job_id, rejection_reason)
+            await self.send_envelope(
+                msg_type="job.ack",
+                payload={"job_id": job_id, "accepted": False, "rejection_reason": rejection_reason},
+                job_id=job_id,
+                correlation_id=corr_id,
+            )
+            return
+
+        # 2. Check input payload size
+        try:
+            serialized = json.dumps(input_payload)
+            max_input = getattr(settings, "WORKER_MAX_INPUT_BYTES", 2 * 1024 * 1024)
+            if len(serialized.encode("utf-8")) > max_input:
+                rejection_reason = f"Input payload exceeded size limit ({len(serialized)} > {max_input} bytes)."
+                logger.warning("Rejecting job '%s': %s", job_id, rejection_reason)
+                await self.send_envelope(
+                    msg_type="job.ack",
+                    payload={"job_id": job_id, "accepted": False, "rejection_reason": rejection_reason},
+                    job_id=job_id,
+                    correlation_id=corr_id,
+                )
+                return
+        except Exception as e:
+            rejection_reason = f"Invalid input payload: {str(e)}"
+            logger.warning("Rejecting job '%s': %s", job_id, rejection_reason)
+            await self.send_envelope(
+                msg_type="job.ack",
+                payload={"job_id": job_id, "accepted": False, "rejection_reason": rejection_reason},
+                job_id=job_id,
+                correlation_id=corr_id,
+            )
+            return
+
+        # 3. Check host CPU and RAM thresholds
+        try:
+            cpu_pct = psutil.cpu_percent(interval=None)
+            max_cpu = getattr(settings, "WORKER_MAX_CPU_PERCENT", 90.0)
+            if cpu_pct > max_cpu:
+                rejection_reason = f"Host CPU limit exceeded ({cpu_pct:.1f}% > {max_cpu:.1f}%)."
+                logger.warning("Rejecting job '%s': %s", job_id, rejection_reason)
+                await self.send_envelope(
+                    msg_type="job.ack",
+                    payload={"job_id": job_id, "accepted": False, "rejection_reason": rejection_reason},
+                    job_id=job_id,
+                    correlation_id=corr_id,
+                )
+                return
+
+            avail_ram_mb = psutil.virtual_memory().available / (1024 * 1024)
+            min_ram_mb = getattr(settings, "WORKER_MIN_AVAILABLE_RAM_MB", 512)
+            if avail_ram_mb < min_ram_mb:
+                rejection_reason = f"Host RAM below threshold ({avail_ram_mb:.0f}MB < {min_ram_mb}MB)."
+                logger.warning("Rejecting job '%s': %s", job_id, rejection_reason)
+                await self.send_envelope(
+                    msg_type="job.ack",
+                    payload={"job_id": job_id, "accepted": False, "rejection_reason": rejection_reason},
+                    job_id=job_id,
+                    correlation_id=corr_id,
+                )
+                return
+        except Exception as e:
+            logger.debug("Pre-flight host telemetry check skipped: %s", str(e))
+
+        # 4. Verify workload compatibility
         if job_type not in self.supported_workloads:
             rejection_reason = f"Workload '{job_type}' not supported on this node."
             logger.warning("Rejecting job '%s': %s", job_id, rejection_reason)
@@ -205,7 +285,7 @@ class WorkerWebSocketClient:
             )
             return
 
-        # 2. Verify concurrency
+        # 5. Verify concurrency
         active_count = self.executor.get_active_jobs_count()
         if active_count >= self.executor.max_concurrent_jobs:
             rejection_reason = f"Concurrency capacity full ({active_count}/{self.executor.max_concurrent_jobs})."

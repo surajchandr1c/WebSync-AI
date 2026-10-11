@@ -270,6 +270,66 @@ class SchedulerEngine:
         await db.commit()
         return recovered_ids
 
+    async def recover_jobs_on_coordinator_startup(self, db: AsyncSession) -> Dict[str, int]:
+        """Recover stranded in-flight jobs on coordinator process startup.
+        
+        - SCHEDULED jobs: unassign and return to QUEUED state so they can be rescheduled.
+        - RUNNING jobs: mark as FAILED with explicit reason indicating coordinator restart / worker interruption.
+        - Reset active_job_count for all workers and mark them offline until they reconnect and authenticate.
+        """
+        now = datetime.now(timezone.utc)
+        # 1. Reset all workers to offline/disconnected on startup since no WebSockets are active yet
+        stmt_workers = select(Worker).where(Worker.connection_status.in_(["online", "busy"]))
+        workers = (await db.execute(stmt_workers)).scalars().all()
+        for w in workers:
+            w.connection_status = "disconnected"
+            w.active_job_count = 0
+
+        # 2. Recover stranded jobs
+        stmt_jobs = select(Job).where(
+            Job.status.in_([JobState.SCHEDULED.value, JobState.RUNNING.value])
+        )
+        stranded_jobs = (await db.execute(stmt_jobs)).scalars().all()
+        requeued_count = 0
+        failed_count = 0
+
+        for j in stranded_jobs:
+            if j.status == JobState.SCHEDULED.value:
+                j.status = JobState.QUEUED.value
+                prev_worker = j.assigned_worker_id
+                j.assigned_worker_id = None
+                requeued_count += 1
+                event = JobEvent(
+                    job_id=j.job_id,
+                    event_type="QUEUED",
+                    details={"reason": f"Startup recovery: coordinator restarted before job was dispatched to worker '{prev_worker}'"},
+                    created_at=now,
+                )
+                db.add(event)
+            elif j.status == JobState.RUNNING.value:
+                j.status = JobState.FAILED.value
+                j.completed_at = now
+                j.result_exit_code = -1
+                j.result_error = f"Coordinator restarted while job was in-flight on worker '{j.assigned_worker_id}'"
+                j.placement_reason = {"status": "failed", "reason": j.result_error}
+                failed_count += 1
+                event = JobEvent(
+                    job_id=j.job_id,
+                    event_type="FAILED",
+                    details={"reason": j.result_error},
+                    created_at=now,
+                )
+                db.add(event)
+
+        await db.commit()
+        logger.info(
+            "Coordinator startup recovery completed: %d jobs requeued, %d running jobs marked failed, %d workers reset to disconnected",
+            requeued_count,
+            failed_count,
+            len(workers),
+        )
+        return {"requeued": requeued_count, "failed": failed_count, "workers_reset": len(workers)}
+
 
 # Global scheduler engine singleton
 scheduler_engine = SchedulerEngine()
