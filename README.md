@@ -125,18 +125,51 @@ PYTHONPATH="services/coordinator/src" python services/coordinator/src/coordinato
 - **Health Check**: `http://localhost:8000/api/v1/health`
 - **Real-Time WebSockets**: `ws://localhost:8000/ws/dashboard`
 
-### 5. Run Automated Tests
+### 5. Run Worker Agent (Phase 3)
 
-Execute the automated test suite covering health, auth, workers, jobs, transitions, and WebSockets:
+The cross-platform Python worker agent collects real system metrics via `psutil`, dynamically detects NVIDIA GPUs via NVML (`nvidia-ml-py`), registers with the coordinator, and executes sandboxed computational workloads.
+
+#### Inspect Local Machine Telemetry (Standalone)
+Inspect genuine system hardware, CPU cores, RAM, and GPU detection without connecting to the coordinator:
 ```bash
-# On Windows:
-$env:PYTHONPATH="services/coordinator/src"; pytest services/coordinator/tests -v
-
-# On Linux/macOS:
-PYTHONPATH="services/coordinator/src" pytest services/coordinator/tests -v
+python worker/agent/main.py --inspect
 ```
 
-### 6. Run the Web Dashboard
+#### Single Heartbeat Verification Mode
+Perform a one-time registration, send one live telemetry heartbeat, and cleanly disconnect:
+```bash
+python worker/agent/main.py --coordinator-url http://localhost:8000 --once
+```
+
+#### Run Worker Agent as Background Daemon
+Connect to the coordinator and begin periodic telemetry heartbeats (default every 10s):
+```bash
+# On Windows:
+$env:PYTHONPATH="worker;.env"; python worker/agent/main.py
+
+# On Linux/macOS:
+PYTHONPATH="worker" python worker/agent/main.py
+```
+
+CLI options supported:
+- `--inspect`: Inspect genuine hardware specs, RAM, CPU cores, and GPU availability, then exit.
+- `--once`: Enroll, dispatch a single real telemetry heartbeat to verify connectivity, and disconnect cleanly.
+- `--coordinator-url <url>`: Override coordinator endpoint (defaults to `WEB_SYNC_COORDINATOR_URL`).
+- `--worker-id <id>`: Override worker node ID (defaults to `WEB_SYNC_WORKER_ID`).
+- `--worker-name <name>`: Override node display name (defaults to hostname).
+
+### 6. Run Automated Tests
+
+Execute the complete test suite (37 tests across coordinator and worker agent):
+```bash
+# On Windows:
+$env:PYTHONPATH="services/coordinator/src;worker"; pytest services/coordinator/tests worker/tests -v
+
+# On Linux/macOS:
+PYTHONPATH="services/coordinator/src:worker" pytest services/coordinator/tests worker/tests -v
+```
+
+### 7. Run the Web Dashboard
 
 ```bash
 npx pnpm --filter @websync/dashboard dev
@@ -145,7 +178,7 @@ Open `http://localhost:3000` to interact with the dashboard.
 
 ---
 
-## Implemented API Endpoints (Phase 2)
+## Implemented API Endpoints (Phase 2 & Phase 3)
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
@@ -172,7 +205,7 @@ Open `http://localhost:3000` to interact with the dashboard.
 
 - **Phase 1**: Project Foundation & Architecture *(Completed)*
 - **Phase 2**: Backend Coordinator & Job Management *(Completed)*
-- **Phase 3**: Worker Agent Remote Execution Engine & Task Sandboxing
+- **Phase 3**: Cross-Platform Python Worker Agent & Telemetry *(Completed)*
 - **Phase 4**: Adaptive Scheduling & Resource-Aware Task Placement
 - **Phase 5**: Real-Time Dashboard UI with Recharts Visualizations
 - **Phase 6**: Security Hardening & Mutual TLS (mTLS)

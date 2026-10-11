@@ -1,67 +1,180 @@
 import argparse
 import asyncio
 import logging
+import signal
 import sys
-from agent.config import settings
-from agent.metrics import get_static_capabilities, sample_system_metrics
+from pathlib import Path
+from typing import Optional
 
-logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] [agent]: %(message)s",
-)
-logger = logging.getLogger("websync-worker")
+# Ensure project root is in sys.path for direct script execution
+_root_dir = Path(__file__).resolve().parent.parent.parent
+if str(_root_dir) not in sys.path:
+    sys.path.insert(0, str(_root_dir))
+_worker_dir = Path(__file__).resolve().parent.parent
+if str(_worker_dir) not in sys.path:
+    sys.path.insert(0, str(_worker_dir))
+
+from worker.agent.config import settings, WorkerSettings
+from worker.agent.logging_config import configure_logging
+from worker.agent.metrics import get_static_hardware_specs, sample_system_metrics
+from worker.agent.transport import CoordinatorTransport
+from worker.agent.registration import RegistrationManager
+from worker.agent.heartbeat import HeartbeatLoop
+from worker.agent.executor import ModularJobExecutor
+
+logger = configure_logging(settings.WEB_SYNC_LOG_LEVEL)
 
 
-def inspect_system():
-    """Print the node's genuine hardware specifications and current metrics."""
-    caps = get_static_capabilities()
+def inspect_node() -> None:
+    """Print complete genuine system telemetry, capabilities, and GPU hardware."""
+    specs = get_static_hardware_specs()
     metrics = sample_system_metrics()
-    
-    print("\n=== WebSync AI Worker Agent — Node Telemetry ===")
-    print(f"Worker ID:        {settings.WORKER_ID}")
-    print(f"Platform:         {caps['platform']} {caps['platform_version']} ({caps['architecture']})")
-    print(f"Hostname:         {caps['hostname']}")
-    print(f"CPU Cores:        {caps['cpu_count_physical']} physical / {caps['cpu_count_logical']} logical")
-    print(f"Total RAM:        {caps['total_memory_bytes'] / (1024**3):.2f} GB")
-    print(f"Current CPU:      {metrics['cpu_percent']}%")
-    print(f"RAM Used:         {metrics['memory_used_bytes'] / (1024**3):.2f} GB ({metrics['memory_percent']}%)")
-    print(f"Disk Free:        {metrics['disk_free_bytes'] / (1024**3):.2f} GB")
-    print("================================================\n")
+
+    print("\n" + "=" * 56)
+    print("      WebSync AI Worker Agent - Node Telemetry")
+    print("=" * 56)
+    print(f"Worker ID:         {settings.WEB_SYNC_WORKER_ID}")
+    print(f"Display Name:      {settings.WEB_SYNC_WORKER_NAME}")
+    print(f"Platform:          {specs['platform']} {specs['platform_version']} ({specs['architecture']})")
+    print(f"Hostname:          {specs['hostname']}")
+    print(f"CPU Cores:         {specs['cpu_count_physical']} physical / {specs['cpu_count_logical']} logical")
+    print(f"Instantaneous CPU: {metrics['cpu_utilization']:.1f}%")
+    print(f"Total RAM:         {specs['total_ram_bytes'] / (1024**3):.2f} GB ({specs['total_ram_bytes']} bytes)")
+    print(f"Available RAM:     {metrics['available_ram_bytes'] / (1024**3):.2f} GB ({metrics['available_ram_bytes']} bytes)")
+    print(f"RAM Utilization:   {metrics['ram_percent']:.1f}%")
+    print(f"Disk Free:         {metrics['disk_free_bytes'] / (1024**3):.2f} GB")
+    print(f"System Uptime:     {specs['system_uptime_seconds']}s" if specs['system_uptime_seconds'] else "System Uptime:     N/A")
+    print(f"Agent Version:     {specs['agent_version']}")
+    print(f"Supported Tasks:   {', '.join(specs['supported_workloads'])}")
+
+    if specs["gpu_available"]:
+        print(f"GPU Hardware:      Available ({len(specs['gpu_metadata'])} device(s))")
+        for i, dev in enumerate(specs["gpu_metadata"]):
+            vram_gb = dev['memory_total_bytes'] / (1024**3)
+            print(f"  [{i}] {dev['name']} - {vram_gb:.2f} GB VRAM")
+    else:
+        print("GPU Hardware:      Not detected or driver unavailable")
+    print("=" * 56 + "\n")
 
 
-async def run_agent():
-    """Foundation agent loop (Phase 1 initialization)."""
-    logger.info("Initializing WebSync AI Worker Agent (ID: %s)", settings.WORKER_ID)
-    logger.info("Target Coordinator URL: %s", settings.WORKER_COORDINATOR_URL)
-    
-    caps = get_static_capabilities()
-    logger.info(
-        "Host detected: %s on %s (%d CPU cores, %.1f GB RAM)",
-        caps["hostname"],
-        caps["platform"],
-        caps["cpu_count_logical"],
-        caps["total_memory_bytes"] / (1024**3),
-    )
-    logger.info("Phase 1 initialization complete. Agent execution engine ready for Phase 2 registration.")
+class WorkerDaemon:
+    """Core worker background agent daemon."""
+
+    def __init__(self, cfg: WorkerSettings):
+        self.cfg = cfg
+        self.executor = ModularJobExecutor(max_concurrent_jobs=cfg.WEB_SYNC_MAX_CONCURRENT_JOBS)
+        self._stop_event = asyncio.Event()
+
+    async def run(self, single_heartbeat_only: bool = False) -> None:
+        """Run registration and periodic heartbeat loop."""
+        logger.info("Initializing WebSync AI Worker Agent (ID: %s)", self.cfg.WEB_SYNC_WORKER_ID)
+        logger.info("Target Coordinator URL: %s", self.cfg.WEB_SYNC_COORDINATOR_URL)
+
+        async with CoordinatorTransport(
+            base_url=self.cfg.WEB_SYNC_COORDINATOR_URL,
+            timeout_seconds=self.cfg.WEB_SYNC_CONNECT_TIMEOUT_SECONDS,
+        ) as transport:
+            # 1. Register with coordinator
+            reg_manager = RegistrationManager(settings=self.cfg, transport=transport)
+            auth_token = await reg_manager.register_with_retry()
+
+            # 2. Setup heartbeat loop
+            heartbeat = HeartbeatLoop(
+                transport=transport,
+                auth_token=auth_token,
+                interval_seconds=reg_manager.heartbeat_interval,
+                active_jobs_provider=self.executor.get_active_jobs_count,
+            )
+
+            if single_heartbeat_only:
+                logger.info("Single heartbeat verification mode requested. Dispatching heartbeat...")
+                await heartbeat.send_single_heartbeat()
+                logger.info("Single heartbeat completed successfully.")
+                await transport.disconnect(
+                    worker_id=self.cfg.WEB_SYNC_WORKER_ID, worker_jwt=auth_token
+                )
+                return
+
+            heartbeat_task = asyncio.create_task(heartbeat.run())
+
+            try:
+                # Wait until stop requested
+                await self._stop_event.wait()
+            finally:
+                logger.info("Shutdown signal received. Stopping worker services...")
+                heartbeat.stop()
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+
+                # Clean disconnection notice
+                await transport.disconnect(
+                    worker_id=self.cfg.WEB_SYNC_WORKER_ID, worker_jwt=auth_token
+                )
+                logger.info("Worker agent shut down cleanly.")
+
+    def stop(self) -> None:
+        self._stop_event.set()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="WebSync AI Distributed Compute Worker Agent")
+    parser = argparse.ArgumentParser(description="WebSync AI Distributed Worker Agent")
     parser.add_argument(
         "--inspect",
         action="store_true",
-        help="Inspect and print genuine host hardware telemetry and exit.",
+        help="Inspect real host hardware telemetry and exit.",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run single registration and single heartbeat then exit cleanly (smoke test).",
+    )
+    parser.add_argument(
+        "--coordinator-url",
+        type=str,
+        default=None,
+        help="Override coordinator base URL (e.g. http://192.168.1.50:8000)",
+    )
+    parser.add_argument(
+        "--worker-id",
+        type=str,
+        default=None,
+        help="Override unique worker node identifier",
     )
     args = parser.parse_args()
 
     if args.inspect:
-        inspect_system()
+        inspect_node()
         sys.exit(0)
 
+    # Dynamic CLI overrides
+    if args.coordinator_url:
+        settings.WEB_SYNC_COORDINATOR_URL = args.coordinator_url
+    if args.worker_id:
+        settings.WEB_SYNC_WORKER_ID = args.worker_id
+
+    daemon = WorkerDaemon(settings)
+
+    # Graceful signal handling
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    def _handle_exit(sig, frame):
+        logger.info("Interrupt signal received (%s). Initiating graceful exit...", sig)
+        daemon.stop()
+
+    signal.signal(signal.SIGINT, _handle_exit)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _handle_exit)
+
     try:
-        asyncio.run(run_agent())
+        loop.run_until_complete(daemon.run(single_heartbeat_only=args.once))
     except KeyboardInterrupt:
-        logger.info("Agent process interrupted by user. Exiting.")
+        logger.info("Keyboard interrupt received.")
+    finally:
+        loop.close()
 
 
 if __name__ == "__main__":
