@@ -7,6 +7,11 @@ import { ClusterProvider } from '@/context/ClusterContext';
 export const metadata: Metadata = {
   title: 'WebSync AI — Distributed Computing Platform',
   description: 'Cross-platform distributed computing management dashboard and telemetry mesh',
+  icons: {
+    icon: 'data:,',
+    shortcut: 'data:,',
+    apple: 'data:,',
+  },
 };
 
 export default function RootLayout({
@@ -16,6 +21,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
+      <head>
+        <link rel="icon" href="data:," />
+      </head>
       <body className="bg-[#090d16] text-gray-100 min-h-screen flex antialiased">
         <ClusterProvider>
           <Sidebar />
