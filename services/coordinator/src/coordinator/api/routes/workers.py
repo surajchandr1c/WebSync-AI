@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from coordinator.db.session import get_db
@@ -86,15 +86,128 @@ async def get_worker(
     return await WorkerService.get_worker(db=db, worker_id=worker_id)
 
 
+from coordinator.schemas.job import (
+    JobDispatchEnvelope,
+    JobAckMessage,
+    JobStartedMessage,
+    JobResultMessage,
+    JobState,
+)
+from coordinator.models.job import Job
+from coordinator.scheduler.engine import scheduler_engine
+from coordinator.services.dispatcher_service import DispatcherService
+from sqlalchemy import select
+
+
 @router.post(
     "/{worker_id}/disconnect",
     response_model=WorkerResponse,
     summary="Disconnect a worker node",
-    description="Marks worker status as disconnected and notifies dashboard clients.",
+    description="Marks worker status as disconnected and handles active job cleanup.",
 )
 async def disconnect_worker(
     worker_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> WorkerResponse:
-    """Mark worker as disconnected."""
+    """Mark worker as disconnected and clean up assigned jobs."""
+    await scheduler_engine.handle_worker_disconnect_cleanup(db=db, worker_id=worker_id)
     return await WorkerService.disconnect_worker(db=db, worker_id=worker_id)
+
+
+@router.get(
+    "/{worker_id}/jobs/pending",
+    response_model=List[JobDispatchEnvelope],
+    summary="Poll for pending scheduled jobs assigned to this worker",
+)
+async def get_pending_jobs_for_worker(
+    worker_id: str,
+    current_worker: Worker = Depends(get_current_worker),
+    db: AsyncSession = Depends(get_db),
+) -> List[JobDispatchEnvelope]:
+    """Return scheduled jobs currently assigned to the calling worker."""
+    stmt = (
+        select(Job)
+        .where(
+            Job.assigned_worker_id == worker_id,
+            Job.status == JobState.SCHEDULED.value,
+        )
+        .order_by(Job.created_at.asc())
+    )
+    jobs = (await db.execute(stmt)).scalars().all()
+    results = []
+    for j in jobs:
+        timeout_sec = 300
+        if j.requirements and "timeout_seconds" in j.requirements:
+            timeout_sec = int(j.requirements["timeout_seconds"])
+        results.append(
+            JobDispatchEnvelope(
+                job_id=j.job_id,
+                job_type=j.job_type,
+                input_payload=j.input_payload,
+                timeout_seconds=timeout_sec,
+                correlation_id=f"poll-{j.job_id}",
+            )
+        )
+    return results
+
+
+@router.post(
+    "/{worker_id}/jobs/{job_id}/ack",
+    summary="Acknowledge receipt or rejection of a dispatched job",
+)
+async def ack_job(
+    worker_id: str,
+    job_id: str,
+    payload: JobAckMessage,
+    current_worker: Worker = Depends(get_current_worker),
+    db: AsyncSession = Depends(get_db),
+):
+    """Worker acknowledges or rejects dispatched job."""
+    await DispatcherService.process_job_ack(
+        db=db,
+        worker_id=worker_id,
+        job_id=job_id,
+        accepted=payload.accepted,
+        rejection_reason=payload.rejection_reason,
+    )
+    return {"status": "ok", "job_id": job_id, "accepted": payload.accepted}
+
+
+@router.post(
+    "/{worker_id}/jobs/{job_id}/start",
+    summary="Report job execution start",
+)
+async def report_job_started(
+    worker_id: str,
+    job_id: str,
+    current_worker: Worker = Depends(get_current_worker),
+    db: AsyncSession = Depends(get_db),
+):
+    """Worker reports that execution of assigned job has started."""
+    await DispatcherService.process_job_started(db=db, worker_id=worker_id, job_id=job_id)
+    return {"status": "ok", "job_id": job_id, "state": "RUNNING"}
+
+
+@router.post(
+    "/{worker_id}/jobs/{job_id}/result",
+    summary="Submit completed job result",
+)
+async def submit_job_result(
+    worker_id: str,
+    job_id: str,
+    payload: JobResultMessage,
+    current_worker: Worker = Depends(get_current_worker),
+    db: AsyncSession = Depends(get_db),
+):
+    """Worker submits final output and execution duration."""
+    await DispatcherService.process_job_result(
+        db=db,
+        worker_id=worker_id,
+        job_id=job_id,
+        exit_code=payload.exit_code,
+        output=payload.output,
+        duration_seconds=payload.duration_seconds,
+        error=payload.error,
+    )
+    return {"status": "ok", "job_id": job_id, "exit_code": payload.exit_code}
+

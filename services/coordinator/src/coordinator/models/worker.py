@@ -28,6 +28,7 @@ class Worker(Base):
 
     # State & Health
     active_job_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_concurrent_jobs: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
     connection_status: Mapped[str] = mapped_column(
         String(32), default="registered", nullable=False, index=True
     )  # registered, online, busy, draining, offline, disconnected

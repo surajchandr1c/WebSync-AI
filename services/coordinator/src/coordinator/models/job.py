@@ -23,6 +23,7 @@ class Job(Base):
     # Payload & Requirements
     input_payload: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     requirements: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    placement_reason: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(

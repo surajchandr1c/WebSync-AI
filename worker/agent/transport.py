@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import random
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import httpx
 
 logger = logging.getLogger("websync-worker.transport")
@@ -132,3 +132,89 @@ class CoordinatorTransport:
             logger.info("Sent clean disconnection notice to coordinator.")
         except Exception as e:
             logger.debug("Failed to send disconnect notice (non-fatal): %s", str(e))
+
+    async def poll_pending_jobs(
+        self, worker_id: str, worker_jwt: str
+    ) -> List[Dict[str, Any]]:
+        """Poll coordinator for scheduled jobs assigned to this worker."""
+        url = f"/api/v1/workers/{worker_id}/jobs/pending"
+        headers = {"Authorization": f"Bearer {worker_jwt}"}
+        try:
+            response = await self.client.get(url, headers=headers)
+            if response.status_code == 200:
+                return response.json()
+            return []
+        except Exception as e:
+            logger.debug("Failed to poll pending jobs: %s", str(e))
+            return []
+
+    async def ack_job(
+        self,
+        worker_id: str,
+        job_id: str,
+        accepted: bool,
+        rejection_reason: Optional[str],
+        worker_jwt: str,
+    ) -> None:
+        """Acknowledge or reject a scheduled job."""
+        url = f"/api/v1/workers/{worker_id}/jobs/{job_id}/ack"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {worker_jwt}",
+        }
+        payload = {
+            "type": "job.ack",
+            "job_id": job_id,
+            "worker_id": worker_id,
+            "accepted": accepted,
+            "rejection_reason": rejection_reason,
+        }
+        try:
+            await self.client.post(url, json=payload, headers=headers)
+        except Exception as e:
+            logger.warning("Failed to send job ack: %s", str(e))
+
+    async def report_job_started(
+        self, worker_id: str, job_id: str, worker_jwt: str
+    ) -> None:
+        """Notify coordinator that execution has begun."""
+        url = f"/api/v1/workers/{worker_id}/jobs/{job_id}/start"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {worker_jwt}",
+        }
+        try:
+            await self.client.post(url, headers=headers)
+        except Exception as e:
+            logger.warning("Failed to report job start: %s", str(e))
+
+    async def report_job_result(
+        self,
+        worker_id: str,
+        job_id: str,
+        exit_code: int,
+        output: str,
+        duration_seconds: float,
+        error: Optional[str],
+        worker_jwt: str,
+    ) -> None:
+        """Submit completed execution result to coordinator."""
+        url = f"/api/v1/workers/{worker_id}/jobs/{job_id}/result"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {worker_jwt}",
+        }
+        payload = {
+            "type": "job.result",
+            "job_id": job_id,
+            "worker_id": worker_id,
+            "exit_code": exit_code,
+            "output": output,
+            "duration_seconds": duration_seconds,
+            "error": error,
+        }
+        try:
+            await self.client.post(url, json=payload, headers=headers)
+        except Exception as e:
+            logger.error("Failed to submit job result: %s", str(e))
+

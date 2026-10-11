@@ -143,42 +143,105 @@ class ModularJobExecutor:
 
     @staticmethod
     async def _run_matrix_multiply(payload: Dict[str, Any]) -> str:
-        """Execute linear algebra matrix multiplication benchmark."""
-        # Yield to event loop
+        """Execute linear algebra matrix multiplication with input bounds validation."""
         await asyncio.sleep(0.01)
 
+        # Case 1: Custom explicit matrices provided
+        if "matrix_a" in payload and "matrix_b" in payload:
+            a = payload["matrix_a"]
+            b = payload["matrix_b"]
+            if not isinstance(a, list) or not isinstance(b, list) or not a or not b:
+                raise ValueError("matrix_a and matrix_b must be non-empty 2D arrays")
+            
+            rows_a = len(a)
+            cols_a = len(a[0])
+            rows_b = len(b)
+            cols_b = len(b[0])
+
+            if cols_a != rows_b:
+                raise ValueError(
+                    f"Dimension mismatch for multiplication: matrix_a is {rows_a}x{cols_a}, "
+                    f"matrix_b is {rows_b}x{cols_b} (cols_a {cols_a} != rows_b {rows_b})"
+                )
+
+            if rows_a > 500 or cols_a > 500 or cols_b > 500:
+                raise ValueError("Matrix dimensions exceed allowed limit of 500x500")
+
+            c = [[0.0] * cols_b for _ in range(rows_a)]
+            for i in range(rows_a):
+                for k in range(cols_a):
+                    val_a = float(a[i][k])
+                    for j in range(cols_b):
+                        c[i][j] += val_a * float(b[k][j])
+
+            # Verifiable trace checksum
+            trace = sum(c[i][i] for i in range(min(rows_a, cols_b)))
+            return (
+                f"Multiplied {rows_a}x{cols_a} by {rows_b}x{cols_b} matrices. "
+                f"Result dimension: {rows_a}x{cols_b}. Trace checksum: {round(trace, 4)}. "
+                f"Sample element c[0][0]: {round(c[0][0], 4)}"
+            )
+
+        # Case 2: Generated dimension benchmark
         dim = payload.get("dimension", 100)
-        if not isinstance(dim, int) or dim <= 0 or dim > 500:
-            dim = 100
+        if not isinstance(dim, int):
+            raise ValueError(f"Matrix dimension must be an integer (got {type(dim).__name__})")
+        if dim <= 0:
+            raise ValueError("Matrix dimension must be positive")
+        if dim > 500:
+            raise ValueError("Matrix dimension exceeds maximum limit of 500")
 
         # Construct deterministic sample matrices
         a = [[(i + j) % 10 for j in range(dim)] for i in range(dim)]
         b = [[(i * j) % 10 for j in range(dim)] for i in range(dim)]
 
-        # Multiply
         c = [[0] * dim for _ in range(dim)]
         for i in range(dim):
             for k in range(dim):
                 for j in range(dim):
                     c[i][j] += a[i][k] * b[k][j]
 
-        # Return summary
         checksum = sum(c[i][i] for i in range(dim))
         return f"Successfully multiplied {dim}x{dim} matrices. Trace checksum: {checksum}"
 
     @staticmethod
     async def _run_data_processing(payload: Dict[str, Any]) -> str:
-        """Execute deterministic data transformation & aggregation."""
+        """Execute deterministic data transformation & aggregation with strict bounds."""
         await asyncio.sleep(0.01)
 
-        records = payload.get("records", [])
-        if not isinstance(records, list) or not records:
-            # Fallback to generated items
+        records = payload.get("records")
+        if records is not None:
+            if not isinstance(records, list):
+                raise ValueError("records field must be a list of records")
+            if len(records) > 50000:
+                raise ValueError(f"Record count ({len(records)}) exceeds maximum limit of 50,000")
+            if not records:
+                raise ValueError("records list must not be empty")
+        else:
+            # Fallback benchmark dataset
             records = [{"id": i, "val": i * 1.5, "tag": f"group-{i % 5}"} for i in range(1000)]
 
-        total_sum = sum(r.get("val", 0) for r in records if isinstance(r, dict))
-        count = len(records)
-        return f"Processed {count} records. Aggregated sum: {total_sum:.2f}"
+        values = []
+        for r in records:
+            if isinstance(r, dict) and "val" in r:
+                try:
+                    values.append(float(r["val"]))
+                except (ValueError, TypeError):
+                    pass
+
+        if not values:
+            raise ValueError("No valid numerical 'val' attributes found in records")
+
+        total_sum = sum(values)
+        count = len(values)
+        avg = total_sum / count
+        min_val = min(values)
+        max_val = max(values)
+
+        return (
+            f"Processed {count} records. Aggregated sum: {total_sum:.2f}, "
+            f"Mean: {avg:.2f}, Min: {min_val:.2f}, Max: {max_val:.2f}"
+        )
 
     @staticmethod
     async def _run_image_processing(payload: Dict[str, Any]) -> str:
@@ -190,5 +253,10 @@ class ModularJobExecutor:
 
         width = payload.get("width", 256)
         height = payload.get("height", 256)
+        if not isinstance(width, int) or not isinstance(height, int):
+            raise ValueError("Width and height must be integers")
+        if width <= 0 or height <= 0 or width > 4096 or height > 4096:
+            raise ValueError("Width and height must be between 1 and 4096")
+
         img = Image.new("RGB", (width, height), color=(73, 109, 137))
         return f"Generated image buffer of dimensions {width}x{height} pixels ({img.mode})"

@@ -160,7 +160,7 @@ CLI options supported:
 
 ### 6. Run Automated Tests
 
-Execute the complete test suite (37 tests across coordinator and worker agent):
+Execute the complete test suite (57 tests across coordinator scheduler, dispatch, workers, and executor):
 ```bash
 # On Windows:
 $env:PYTHONPATH="services/coordinator/src;worker"; pytest services/coordinator/tests worker/tests -v
@@ -178,7 +178,7 @@ Open `http://localhost:3000` to interact with the dashboard.
 
 ---
 
-## Implemented API Endpoints (Phase 2 & Phase 3)
+## Implemented API Endpoints (Phase 2, 3 & 4)
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
@@ -190,14 +190,19 @@ Open `http://localhost:3000` to interact with the dashboard.
 | `POST` | `/api/v1/workers/heartbeat` | Ingest real-time CPU, RAM, and active jobs telemetry from worker nodes. |
 | `GET` | `/api/v1/workers` | Paginated list of registered workers with stale-heartbeat timeout evaluation. |
 | `GET` | `/api/v1/workers/{worker_id}` | Retrieve details for a single worker node. |
-| `POST` | `/api/v1/workers/{worker_id}/disconnect` | Mark a worker as disconnected and notify dashboard clients. |
-| `POST` | `/api/v1/jobs` | Submit a computational job (`matrix_multiply`, `data_processing`, `image_processing`). |
+| `POST` | `/api/v1/workers/{worker_id}/disconnect` | Mark a worker as disconnected and safely re-queue or fail active jobs. |
+| `GET` | `/api/v1/workers/{worker_id}/jobs/pending` | Poll for scheduled jobs assigned to a specific worker. |
+| `POST` | `/api/v1/workers/{worker_id}/jobs/{job_id}/ack` | Worker acknowledgement or rejection of dispatched job. |
+| `POST` | `/api/v1/workers/{worker_id}/jobs/{job_id}/start` | Worker execution start confirmation (transitions to `RUNNING`). |
+| `POST` | `/api/v1/workers/{worker_id}/jobs/{job_id}/result` | Submit completed workload output and execution duration. |
+| `POST` | `/api/v1/jobs` | Submit a computational job and trigger adaptive scheduling placement. |
 | `GET` | `/api/v1/jobs` | Paginated list of jobs with status and job_type filtering. |
-| `GET` | `/api/v1/jobs/{job_id}` | Retrieve job status, requirements, and assignment details. |
-| `POST` | `/api/v1/jobs/{job_id}/cancel` | Cancel a non-terminal queued, scheduled, or running job. |
+| `GET` | `/api/v1/jobs/{job_id}` | Retrieve job status, requirements, placement reason, and assignment details. |
+| `POST` | `/api/v1/jobs/{job_id}/cancel` | Cancel a non-terminal queued, scheduled, or running job and release capacity. |
 | `GET` | `/api/v1/jobs/{job_id}/result` | Retrieve execution exit code, duration, and output for a completed job. |
 | `PATCH` | `/api/v1/jobs/{job_id}/status` | Update execution status with strict state machine validation. |
 | `WS` | `/ws/dashboard` | WebSocket stream broadcasting `worker.*` and `job.*` event notifications. |
+| `WS` | `/ws/worker` | Authenticated worker agent bidirectional WebSocket channel for real-time dispatch. |
 
 ---
 
@@ -206,7 +211,7 @@ Open `http://localhost:3000` to interact with the dashboard.
 - **Phase 1**: Project Foundation & Architecture *(Completed)*
 - **Phase 2**: Backend Coordinator & Job Management *(Completed)*
 - **Phase 3**: Cross-Platform Python Worker Agent & Telemetry *(Completed)*
-- **Phase 4**: Adaptive Scheduling & Resource-Aware Task Placement
+- **Phase 4**: Adaptive Scheduling & Distributed Job Execution *(Completed)*
 - **Phase 5**: Real-Time Dashboard UI with Recharts Visualizations
 - **Phase 6**: Security Hardening & Mutual TLS (mTLS)
 - **Phase 7**: Cross-Platform Desktop Packaging (Tauri 2)

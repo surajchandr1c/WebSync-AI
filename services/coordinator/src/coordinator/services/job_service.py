@@ -14,6 +14,8 @@ from coordinator.schemas.job import (
     VALID_JOB_TRANSITIONS,
 )
 from coordinator.ws.manager import ws_manager
+from coordinator.scheduler.engine import scheduler_engine
+from coordinator.services.dispatcher_service import DispatcherService
 
 
 def job_to_response(job: Job) -> JobResponse:
@@ -27,6 +29,7 @@ def job_to_response(job: Job) -> JobResponse:
         assigned_worker_id=job.assigned_worker_id,
         input_payload=job.input_payload,
         requirements=job.requirements,
+        placement_reason=job.placement_reason,
         created_at=job.created_at,
         started_at=job.started_at,
         completed_at=job.completed_at,
@@ -78,6 +81,10 @@ class JobService:
                 "status": job.status,
             },
         )
+
+        # Attempt immediate scheduling and dispatch
+        await DispatcherService.try_dispatch_job(db, job)
+        await db.refresh(job)
 
         return job_to_response(job)
 
@@ -140,6 +147,10 @@ class JobService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Cannot cancel job in terminal state '{job.status}'.",
             )
+
+        # Release worker capacity if assigned
+        if job.assigned_worker_id and current_state in (JobState.SCHEDULED, JobState.RUNNING):
+            await scheduler_engine.release_capacity(db, job.assigned_worker_id)
 
         now = datetime.now(timezone.utc)
         job.status = JobState.CANCELLED.value
@@ -217,6 +228,10 @@ class JobService:
             elif target_state == JobState.FAILED:
                 job.result_exit_code = payload.result_exit_code or 1
                 job.result_error = payload.result_error or "Unknown failure"
+
+            # Release worker capacity if assigned
+            if job.assigned_worker_id:
+                await scheduler_engine.release_capacity(db, job.assigned_worker_id)
 
         if payload.assigned_worker_id:
             job.assigned_worker_id = payload.assigned_worker_id

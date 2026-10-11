@@ -23,6 +23,7 @@ class WorkerRegistrationRequest(BaseModel):
     )
     gpu_available: bool = Field(default=False, description="Whether supported GPU hardware is present")
     gpu_metadata: List[Dict[str, Any]] = Field(default_factory=list, description="GPU hardware details")
+    max_concurrent_jobs: int = Field(default=2, ge=1, le=64, description="Maximum concurrent tasks this node can execute")
 
     @field_validator("available_ram_bytes")
     @classmethod
@@ -64,6 +65,7 @@ class WorkerResponse(BaseModel):
     gpu_available: bool
     gpu_metadata: List[Dict[str, Any]]
     active_job_count: int
+    max_concurrent_jobs: int = 2
     connection_status: str
     last_heartbeat: Optional[datetime] = None
     registered_at: datetime

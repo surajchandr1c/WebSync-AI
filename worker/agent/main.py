@@ -86,6 +86,19 @@ class WorkerDaemon:
                 active_jobs_provider=self.executor.get_active_jobs_count,
             )
 
+            # 3. Setup job dispatcher
+            from worker.agent.capabilities import get_supported_workloads
+            from worker.agent.dispatcher import WorkerDispatcher
+
+            dispatcher = WorkerDispatcher(
+                transport=transport,
+                executor=self.executor,
+                worker_id=self.cfg.WEB_SYNC_WORKER_ID,
+                worker_jwt=auth_token,
+                supported_workloads=get_supported_workloads(),
+                poll_interval_seconds=1.0,
+            )
+
             if single_heartbeat_only:
                 logger.info("Single heartbeat verification mode requested. Dispatching heartbeat...")
                 await heartbeat.send_single_heartbeat()
@@ -96,17 +109,20 @@ class WorkerDaemon:
                 return
 
             heartbeat_task = asyncio.create_task(heartbeat.run())
+            dispatcher_task = asyncio.create_task(dispatcher.run())
 
             try:
                 # Wait until stop requested
                 await self._stop_event.wait()
             finally:
                 logger.info("Shutdown signal received. Stopping worker services...")
+                dispatcher.stop()
                 heartbeat.stop()
+                dispatcher_task.cancel()
                 heartbeat_task.cancel()
                 try:
-                    await heartbeat_task
-                except asyncio.CancelledError:
+                    await asyncio.gather(heartbeat_task, dispatcher_task, return_exceptions=True)
+                except Exception:
                     pass
 
                 # Clean disconnection notice
@@ -143,6 +159,12 @@ def main():
         default=None,
         help="Override unique worker node identifier",
     )
+    parser.add_argument(
+        "--worker-name",
+        type=str,
+        default=None,
+        help="Override worker node display name",
+    )
     args = parser.parse_args()
 
     if args.inspect:
@@ -154,6 +176,8 @@ def main():
         settings.WEB_SYNC_COORDINATOR_URL = args.coordinator_url
     if args.worker_id:
         settings.WEB_SYNC_WORKER_ID = args.worker_id
+    if args.worker_name:
+        settings.WEB_SYNC_WORKER_NAME = args.worker_name
 
     daemon = WorkerDaemon(settings)
 

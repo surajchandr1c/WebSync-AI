@@ -32,8 +32,15 @@ VALID_JOB_TRANSITIONS = {
 
 class JobRequirements(BaseModel):
     min_cpu_cores: int = Field(default=1, ge=1, description="Minimum required CPU cores")
-    min_ram_mb: int = Field(default=512, ge=128, description="Minimum RAM in Megabytes")
+    min_ram_mb: int = Field(default=512, ge=0, description="Minimum RAM in Megabytes")
+    min_ram_bytes: Optional[int] = Field(None, ge=0, description="Minimum RAM in exact bytes (overrides min_ram_mb if specified)")
     gpu_required: bool = Field(default=False, description="Whether workload requires GPU hardware")
+    timeout_seconds: int = Field(default=300, ge=1, description="Maximum execution timeout in seconds")
+
+    def get_min_ram_bytes(self) -> int:
+        if self.min_ram_bytes is not None:
+            return self.min_ram_bytes
+        return self.min_ram_mb * 1024 * 1024
 
 
 class JobCreateRequest(BaseModel):
@@ -67,6 +74,7 @@ class JobResponse(BaseModel):
     assigned_worker_id: Optional[str] = None
     input_payload: Dict[str, Any]
     requirements: Dict[str, Any]
+    placement_reason: Optional[Dict[str, Any]] = None
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -96,3 +104,47 @@ class JobStatusUpdateRequest(BaseModel):
     result_output: Optional[str] = None
     result_duration_seconds: Optional[float] = None
     result_error: Optional[str] = None
+
+
+# --- Dispatch & Worker Communication Protocols ---
+
+class JobDispatchEnvelope(BaseModel):
+    type: str = "job.dispatch"
+    job_id: str
+    job_type: str
+    input_payload: Dict[str, Any]
+    timeout_seconds: int = 300
+    correlation_id: str
+
+
+class JobAckMessage(BaseModel):
+    type: str = "job.ack"
+    job_id: str
+    worker_id: str
+    accepted: bool
+    rejection_reason: Optional[str] = None
+    correlation_id: Optional[str] = None
+
+
+class JobStartedMessage(BaseModel):
+    type: str = "job.started"
+    job_id: str
+    worker_id: str
+
+
+class JobProgressMessage(BaseModel):
+    type: str = "job.progress"
+    job_id: str
+    worker_id: str
+    progress_percent: float = Field(..., ge=0.0, le=100.0)
+    message: Optional[str] = None
+
+
+class JobResultMessage(BaseModel):
+    type: str = "job.result"
+    job_id: str
+    worker_id: str
+    exit_code: int
+    output: str
+    duration_seconds: float = Field(..., ge=0.0)
+    error: Optional[str] = None
