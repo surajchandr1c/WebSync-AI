@@ -160,7 +160,7 @@ CLI options supported:
 
 ### 6. Run Automated Tests
 
-Execute the complete test suite (57 tests across coordinator scheduler, dispatch, workers, and executor):
+Execute the complete test suite (58 tests across coordinator scheduler, dispatch, workers, and executor):
 ```bash
 # On Windows:
 $env:PYTHONPATH="services/coordinator/src;worker"; pytest services/coordinator/tests worker/tests -v
@@ -201,8 +201,23 @@ Open `http://localhost:3000` to interact with the dashboard.
 | `POST` | `/api/v1/jobs/{job_id}/cancel` | Cancel a non-terminal queued, scheduled, or running job and release capacity. |
 | `GET` | `/api/v1/jobs/{job_id}/result` | Retrieve execution exit code, duration, and output for a completed job. |
 | `PATCH` | `/api/v1/jobs/{job_id}/status` | Update execution status with strict state machine validation. |
+| `GET` | `/api/v1/jobs/{job_id}/events` | Retrieve audit history and state transitions for a specific job. |
+| `GET` | `/api/v1/events` | Paginated audit trail of all cluster and workload lifecycle events. |
 | `WS` | `/ws/dashboard` | WebSocket stream broadcasting `worker.*` and `job.*` event notifications. |
 | `WS` | `/ws/worker` | Authenticated worker agent bidirectional WebSocket channel for real-time dispatch. |
+
+---
+
+## WebSync AI Dashboard Views (Phase 5)
+
+WebSync AI features 6 real-time, desktop-first dark-mode views connecting directly to the coordinator:
+
+1. **Overview (`/`)**: Cluster compute pool status, connected node count, active workloads in-flight, pooled RAM gauge, CPU average, and recent workloads preview.
+2. **Workers (`/workers`)**: Real-time worker cards with OS platforms (Windows, Linux, macOS), authentic `psutil` CPU/RAM meters, detected GPU hardware, concurrency slots, search, status filter, and node enrollment instructions.
+3. **Jobs (`/jobs`)**: Distributed workload table with state badges (`QUEUED`, `SCHEDULED`, `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED`), workload submission modal, cancellation actions, and result inspection.
+4. **Resource Monitor (`/monitor`)**: Time-series CPU load trend chart, pooled memory gauge, detected GPU accelerator inventory, and a worker heartbeat freshness table.
+5. **Activity Logs (`/logs`)**: Chronological audit trail stream with event type filters (`CREATED`, `SCHEDULED`, `STARTED`, `COMPLETED`, `FAILED`, `CANCELLED`), timestamp inspection, and JSON details viewer.
+6. **Settings (`/settings`)**: Coordinator endpoint configurator with live ping latency test, system runtime metadata, and worker startup commands.
 
 ---
 
@@ -212,6 +227,6 @@ Open `http://localhost:3000` to interact with the dashboard.
 - **Phase 2**: Backend Coordinator & Job Management *(Completed)*
 - **Phase 3**: Cross-Platform Python Worker Agent & Telemetry *(Completed)*
 - **Phase 4**: Adaptive Scheduling & Distributed Job Execution *(Completed)*
-- **Phase 5**: Real-Time Dashboard UI with Recharts Visualizations
+- **Phase 5**: Dashboard, UI/UX, and Application Navigation *(Completed)*
 - **Phase 6**: Security Hardening & Mutual TLS (mTLS)
 - **Phase 7**: Cross-Platform Desktop Packaging (Tauri 2)
