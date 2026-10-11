@@ -10,6 +10,7 @@ from coordinator.schemas.job import (
     JobResponse,
     JobResultResponse,
     JobStatusUpdateRequest,
+    JobEventResponse,
     JobState,
     VALID_JOB_TRANSITIONS,
 )
@@ -295,3 +296,40 @@ class JobService:
             result_error=job.result_error,
             completed_at=job.completed_at,
         )
+
+    @staticmethod
+    async def list_events(
+        db: AsyncSession,
+        job_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> Tuple[List[JobEventResponse], int]:
+        """Retrieve paginated audit log events."""
+        stmt = select(JobEvent)
+        count_stmt = select(func.count(JobEvent.id))
+
+        if job_id:
+            stmt = stmt.where(JobEvent.job_id == job_id)
+            count_stmt = count_stmt.where(JobEvent.job_id == job_id)
+        if event_type:
+            stmt = stmt.where(JobEvent.event_type == event_type)
+            count_stmt = count_stmt.where(JobEvent.event_type == event_type)
+
+        stmt = stmt.order_by(JobEvent.created_at.desc()).offset(skip).limit(limit)
+
+        total = (await db.execute(count_stmt)).scalar() or 0
+        result = await db.execute(stmt)
+        events = result.scalars().all()
+
+        items = [
+            JobEventResponse(
+                id=ev.id,
+                job_id=ev.job_id,
+                event_type=ev.event_type,
+                details=ev.details,
+                created_at=ev.created_at,
+            )
+            for ev in events
+        ]
+        return items, total

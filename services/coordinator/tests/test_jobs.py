@@ -151,3 +151,27 @@ async def test_job_cancellation(client: httpx.AsyncClient):
     # Cannot cancel already cancelled job
     res_repeat = await client.post(f"/api/v1/jobs/{job_id}/cancel")
     assert res_repeat.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_job_and_system_events(client: httpx.AsyncClient):
+    """Verify querying job audit events and global events endpoint."""
+    res = await client.post(
+        "/api/v1/jobs",
+        json={"name": "event-job", "job_type": "matrix_multiply", "input_payload": {"dim": 10}},
+    )
+    job_id = res.json()["job_id"]
+
+    # Check job-specific events
+    res_job_events = await client.get(f"/api/v1/jobs/{job_id}/events")
+    assert res_job_events.status_code == 200
+    job_events = res_job_events.json()
+    assert job_events["total"] >= 1
+    assert any(ev["event_type"] == "CREATED" for ev in job_events["items"])
+
+    # Check global events
+    res_global_events = await client.get("/api/v1/events")
+    assert res_global_events.status_code == 200
+    global_events = res_global_events.json()
+    assert global_events["total"] >= 1
+    assert len(global_events["items"]) >= 1

@@ -148,3 +148,19 @@ class JobResultMessage(BaseModel):
     output: str
     duration_seconds: float = Field(..., ge=0.0)
     error: Optional[str] = None
+
+
+class JobEventResponse(BaseModel):
+    id: str
+    job_id: str
+    event_type: str
+    details: Dict[str, Any]
+    created_at: datetime
+
+
+class JobEventListResponse(BaseModel):
+    items: List[JobEventResponse]
+    total: int
+    page: int
+    page_size: int
+

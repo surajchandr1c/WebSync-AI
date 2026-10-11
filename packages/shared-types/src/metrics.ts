@@ -14,5 +14,10 @@ export interface GPUMetrics {
 
 export interface GPUInfo {
   name: string;
-  memory_total_bytes: number;
+  memory_total_bytes?: number;
+  memory_used_bytes?: number;
+  utilization_percent?: number;
+  temperature_c?: number;
+  driver_version?: string;
+  [key: string]: any;
 }

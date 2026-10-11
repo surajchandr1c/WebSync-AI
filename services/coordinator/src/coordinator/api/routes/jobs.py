@@ -9,6 +9,7 @@ from coordinator.schemas.job import (
     JobResultResponse,
     JobListResponse,
     JobStatusUpdateRequest,
+    JobEventListResponse,
 )
 from coordinator.services.job_service import JobService
 from coordinator.core.auth import get_optional_current_user
@@ -112,3 +113,22 @@ async def update_job_status(
 ) -> JobResponse:
     """Update job status with strict transition validation."""
     return await JobService.update_job_status(db=db, job_id=job_id, payload=payload)
+
+
+@router.get(
+    "/{job_id}/events",
+    response_model=JobEventListResponse,
+    summary="Retrieve audit trail events for a specific job",
+)
+async def get_job_events(
+    job_id: str,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    db: AsyncSession = Depends(get_db),
+) -> JobEventListResponse:
+    """Retrieve audit history and transitions for a specific job."""
+    skip = (page - 1) * page_size
+    items, total = await JobService.list_events(
+        db=db, job_id=job_id, skip=skip, limit=page_size
+    )
+    return JobEventListResponse(items=items, total=total, page=page, page_size=page_size)

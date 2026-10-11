@@ -1,0 +1,289 @@
+'use client';
+
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import { WebSyncClient } from '@websync/api-client';
+import {
+  HealthResponse,
+  WorkerResponse,
+  JobResponse,
+  JobEventResponse,
+} from '@websync/shared-types';
+
+export interface TelemetryPoint {
+  timestamp: string;
+  timeLabel: string;
+  avgCpu: number;
+  totalRamUsedGb: number;
+  totalRamMaxGb: number;
+  onlineCount: number;
+}
+
+interface ClusterContextType {
+  coordinatorUrl: string;
+  wsUrl: string;
+  wsStatus: 'connected' | 'connecting' | 'disconnected';
+  client: WebSyncClient;
+  health: HealthResponse | null;
+  healthError: string | null;
+  workers: WorkerResponse[];
+  jobs: JobResponse[];
+  events: JobEventResponse[];
+  telemetryHistory: TelemetryPoint[];
+  isLoading: boolean;
+  lastSync: Date | null;
+  refreshAll: () => Promise<void>;
+  refreshWorkers: () => Promise<void>;
+  refreshJobs: () => Promise<void>;
+  refreshEvents: () => Promise<void>;
+  setCoordinatorUrl: (url: string) => void;
+}
+
+const ClusterContext = createContext<ClusterContextType | null>(null);
+
+const DEFAULT_COORDINATOR_URL =
+  process.env.NEXT_PUBLIC_COORDINATOR_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  'http://localhost:8000';
+
+const DEFAULT_WS_URL =
+  process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws/dashboard';
+
+export function ClusterProvider({ children }: { children: React.ReactNode }) {
+  const [coordinatorUrl, setCoordinatorUrlState] = useState<string>(DEFAULT_COORDINATOR_URL);
+  const [wsUrl, setWsUrl] = useState<string>(DEFAULT_WS_URL);
+  const [wsStatus, setWsStatus] = useState<'connected' | 'connecting' | 'disconnected'>('connecting');
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [workers, setWorkers] = useState<WorkerResponse[]>([]);
+  const [jobs, setJobs] = useState<JobResponse[]>([]);
+  const [events, setEvents] = useState<JobEventResponse[]>([]);
+  const [telemetryHistory, setTelemetryHistory] = useState<TelemetryPoint[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [lastSync, setLastSync] = useState<Date | null>(null);
+
+  const clientRef = useRef<WebSyncClient>(new WebSyncClient({ baseUrl: coordinatorUrl }));
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectAttemptsRef = useRef<number>(0);
+
+  const setCoordinatorUrl = (url: string) => {
+    setCoordinatorUrlState(url);
+    clientRef.current = new WebSyncClient({ baseUrl: url });
+    const wsTarget = url.replace(/^http/, 'ws') + '/ws/dashboard';
+    setWsUrl(wsTarget);
+  };
+
+  // Record a telemetry point based on current workers
+  const recordTelemetry = useCallback((currentWorkers: WorkerResponse[]) => {
+    const online = currentWorkers.filter(
+      (w) => w.connection_status === 'online' || w.connection_status === 'busy'
+    );
+    const avgCpu =
+      online.length > 0
+        ? Math.round(
+            (online.reduce((acc, w) => acc + (w.cpu_utilization || 0), 0) / online.length) * 10
+          ) / 10
+        : 0;
+    const totalRamMax = currentWorkers.reduce((acc, w) => acc + (w.total_ram_bytes || 0), 0);
+    const totalRamAvail = currentWorkers.reduce((acc, w) => acc + (w.available_ram_bytes || 0), 0);
+    const totalRamUsed = Math.max(0, totalRamMax - totalRamAvail);
+
+    const now = new Date();
+    const point: TelemetryPoint = {
+      timestamp: now.toISOString(),
+      timeLabel: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      avgCpu,
+      totalRamUsedGb: Math.round((totalRamUsed / (1024 * 1024 * 1024)) * 10) / 10,
+      totalRamMaxGb: Math.round((totalRamMax / (1024 * 1024 * 1024)) * 10) / 10,
+      onlineCount: online.length,
+    };
+
+    setTelemetryHistory((prev) => {
+      const next = [...prev, point];
+      return next.length > 30 ? next.slice(next.length - 30) : next;
+    });
+  }, []);
+
+  const refreshHealth = useCallback(async () => {
+    try {
+      const h = await clientRef.current.getHealth();
+      setHealth(h);
+      setHealthError(null);
+    } catch (err: unknown) {
+      setHealth(null);
+      setHealthError(err instanceof Error ? err.message : 'Coordinator connection failed');
+    }
+  }, []);
+
+  const refreshWorkers = useCallback(async () => {
+    try {
+      const res = await clientRef.current.listWorkers({ page_size: 100 });
+      setWorkers(res.items);
+      recordTelemetry(res.items);
+    } catch (err) {
+      console.warn('Failed to refresh workers:', err);
+    }
+  }, [recordTelemetry]);
+
+  const refreshJobs = useCallback(async () => {
+    try {
+      const res = await clientRef.current.listJobs({ page_size: 100 });
+      setJobs(res.items);
+    } catch (err) {
+      console.warn('Failed to refresh jobs:', err);
+    }
+  }, []);
+
+  const refreshEvents = useCallback(async () => {
+    try {
+      const res = await clientRef.current.listEvents({ page_size: 100 });
+      setEvents(res.items);
+    } catch (err) {
+      console.warn('Failed to refresh events:', err);
+    }
+  }, []);
+
+  const refreshAll = useCallback(async () => {
+    setIsLoading(true);
+    await Promise.allSettled([
+      refreshHealth(),
+      refreshWorkers(),
+      refreshJobs(),
+      refreshEvents(),
+    ]);
+    setLastSync(new Date());
+    setIsLoading(false);
+  }, [refreshHealth, refreshWorkers, refreshJobs, refreshEvents]);
+
+  // Initial load
+  useEffect(() => {
+    refreshAll();
+  }, [refreshAll]);
+
+  // Fallback periodic poll every 10 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refreshHealth();
+      refreshWorkers();
+      refreshJobs();
+      refreshEvents();
+      setLastSync(new Date());
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [refreshHealth, refreshWorkers, refreshJobs, refreshEvents]);
+
+  // WebSocket Connection & Real-Time Event Dispatcher
+  useEffect(() => {
+    let isCancelled = false;
+
+    const connectWs = () => {
+      if (isCancelled) return;
+      try {
+        setWsStatus('connecting');
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          if (isCancelled) return;
+          setWsStatus('connected');
+          reconnectAttemptsRef.current = 0;
+        };
+
+        ws.onmessage = (event) => {
+          if (isCancelled) return;
+          try {
+            const parsed = JSON.parse(event.data);
+            const eventName = parsed.event || parsed.type;
+            const data = parsed.data || parsed.payload || {};
+
+            // Instant updates based on event type
+            if (eventName.startsWith('worker.')) {
+              refreshWorkers();
+            } else if (eventName.startsWith('job.')) {
+              refreshJobs();
+              refreshEvents();
+            }
+
+            // If it's a known audit event, prepend to events list
+            if (parsed.event && parsed.data) {
+              const syntheticEvent: JobEventResponse = {
+                id: `ws-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+                job_id: data.job_id || 'system',
+                event_type: eventName.toUpperCase().replace('.', '_'),
+                details: data,
+                created_at: new Date().toISOString(),
+              };
+              setEvents((prev) => [syntheticEvent, ...prev.slice(0, 99)]);
+            }
+
+            setLastSync(new Date());
+          } catch (e) {
+            console.debug('WS parse error:', e);
+          }
+        };
+
+        ws.onerror = () => {
+          if (isCancelled) return;
+          setWsStatus('disconnected');
+        };
+
+        ws.onclose = () => {
+          if (isCancelled) return;
+          setWsStatus('disconnected');
+          // Exponential backoff reconnect
+          const delay = Math.min(10000, 1000 * Math.pow(1.5, reconnectAttemptsRef.current++));
+          reconnectTimerRef.current = setTimeout(connectWs, delay);
+        };
+      } catch (err) {
+        setWsStatus('disconnected');
+        const delay = Math.min(10000, 1000 * Math.pow(1.5, reconnectAttemptsRef.current++));
+        reconnectTimerRef.current = setTimeout(connectWs, delay);
+      }
+    };
+
+    connectWs();
+
+    return () => {
+      isCancelled = true;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, [wsUrl, refreshWorkers, refreshJobs, refreshEvents]);
+
+  return (
+    <ClusterContext.Provider
+      value={{
+        coordinatorUrl,
+        wsUrl,
+        wsStatus,
+        client: clientRef.current,
+        health,
+        healthError,
+        workers,
+        jobs,
+        events,
+        telemetryHistory,
+        isLoading,
+        lastSync,
+        refreshAll,
+        refreshWorkers,
+        refreshJobs,
+        refreshEvents,
+        setCoordinatorUrl,
+      }}
+    >
+      {children}
+    </ClusterContext.Provider>
+  );
+}
+
+export function useCluster() {
+  const context = useContext(ClusterContext);
+  if (!context) {
+    throw new Error('useCluster must be used within a ClusterProvider');
+  }
+  return context;
+}

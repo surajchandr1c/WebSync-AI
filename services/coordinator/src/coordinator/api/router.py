@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from coordinator.api.routes import health, auth, workers, jobs, ws
+from coordinator.api.routes import health, auth, workers, jobs, events, ws
 
 api_router = APIRouter()
 
@@ -8,6 +8,7 @@ api_router.include_router(health.router)
 api_router.include_router(auth.router)
 api_router.include_router(workers.router)
 api_router.include_router(jobs.router)
+api_router.include_router(events.router)
 
 # WebSocket router
 ws_router = ws.router
