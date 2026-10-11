@@ -28,14 +28,19 @@ from coordinator.core.security import hash_password, create_access_token
 from coordinator.models.user import User
 
 
+from coordinator.core.rate_limit import rate_limiter
+
+
 @pytest_asyncio.fixture(scope="function", autouse=True)
 async def setup_test_database():
     """Create all tables before each test and drop them after."""
+    rate_limiter.clear()
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+    rate_limiter.clear()
 
 
 async def override_get_db() -> AsyncGenerator[AsyncSession, None]:

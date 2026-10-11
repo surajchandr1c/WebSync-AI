@@ -80,7 +80,10 @@ async def generic_exception_handler(request: Request, exc: Exception):
     )
 
 
+from coordinator.api.routes.health import router as health_router
+
 # Mount API routers
+app.include_router(health_router)
 app.include_router(api_router, prefix=settings.COORDINATOR_API_V1_STR)
 app.include_router(ws_router)
 
