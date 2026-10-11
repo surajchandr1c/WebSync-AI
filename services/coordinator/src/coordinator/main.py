@@ -17,6 +17,11 @@ logger = logging.getLogger("coordinator")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing WebSync AI Coordinator v0.2.0 in '%s' mode", settings.ENVIRONMENT)
+    if settings.ENVIRONMENT.lower() == "production" and "sqlite" in settings.DATABASE_URL.lower():
+        err_msg = "Production environment error: SQLite is not permitted for production deployment. Please configure DATABASE_URL with a valid PostgreSQL connection string."
+        logger.error(err_msg)
+        raise RuntimeError(err_msg)
+
     # Initialize DB schemas and run startup recovery
     try:
         await init_db()

@@ -9,13 +9,16 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
 COPY services/coordinator/pyproject.toml services/coordinator/
+COPY services/coordinator/alembic.ini services/coordinator/
+COPY services/coordinator/alembic/ services/coordinator/alembic/
 COPY services/coordinator/src/ services/coordinator/src/
 
 RUN pip install --no-cache-dir ./services/coordinator
 
+ENV PORT=8000
 EXPOSE 8000
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8000/api/v1/health || exit 1
+  CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-CMD ["python", "services/coordinator/src/coordinator/main.py"]
+CMD ["sh", "-c", "uvicorn coordinator.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

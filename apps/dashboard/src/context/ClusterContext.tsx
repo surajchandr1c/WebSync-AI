@@ -47,14 +47,19 @@ const DEFAULT_COORDINATOR_URL =
   process.env.NEXT_PUBLIC_API_URL ||
   'http://localhost:8000';
 
-const DEFAULT_WS_URL =
-  process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws/dashboard';
+function deriveWsUrl(coordUrl: string): string {
+  if (process.env.NEXT_PUBLIC_WS_URL) {
+    return process.env.NEXT_PUBLIC_WS_URL;
+  }
+  return coordUrl.replace(/^http/, 'ws') + '/ws/dashboard';
+}
 
+const STORAGE_KEY = 'websync_coordinator_url';
 const TERMINAL_STATES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 
 export function ClusterProvider({ children }: { children: React.ReactNode }) {
   const [coordinatorUrl, setCoordinatorUrlState] = useState<string>(DEFAULT_COORDINATOR_URL);
-  const [wsUrl, setWsUrl] = useState<string>(DEFAULT_WS_URL);
+  const [wsUrl, setWsUrl] = useState<string>(() => deriveWsUrl(DEFAULT_COORDINATOR_URL));
   const [wsStatus, setWsStatus] = useState<'connected' | 'connecting' | 'disconnected'>('connecting');
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
@@ -77,11 +82,29 @@ export function ClusterProvider({ children }: { children: React.ReactNode }) {
     (!lastSync || Date.now() - lastSync.getTime() > 20000);
 
   const setCoordinatorUrl = (url: string) => {
-    setCoordinatorUrlState(url);
-    clientRef.current = new WebSyncClient({ baseUrl: url });
-    const wsTarget = url.replace(/^http/, 'ws') + '/ws/dashboard';
+    const clean = url.trim().replace(/\/+$/, '');
+    setCoordinatorUrlState(clean);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(STORAGE_KEY, clean);
+      } catch {}
+    }
+    clientRef.current = new WebSyncClient({ baseUrl: clean });
+    const wsTarget = deriveWsUrl(clean);
     setWsUrl(wsTarget);
   };
+
+  // Hydration-safe initial check for local storage override
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved && saved.trim() && saved.trim() !== DEFAULT_COORDINATOR_URL) {
+          setCoordinatorUrl(saved.trim());
+        }
+      } catch {}
+    }
+  }, []);
 
   // Record a telemetry point based on current workers
   const recordTelemetry = useCallback((currentWorkers: WorkerResponse[]) => {

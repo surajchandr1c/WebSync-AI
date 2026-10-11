@@ -20,6 +20,15 @@ if "sqlite" in settings.DATABASE_URL:
     from sqlalchemy.pool import NullPool
     engine_kwargs["connect_args"] = {"check_same_thread": False}
     engine_kwargs["poolclass"] = NullPool
+else:
+    # Production PostgreSQL connection pool configuration
+    engine_kwargs.update({
+        "pool_size": 10,
+        "max_overflow": 20,
+        "pool_timeout": 30,
+        "pool_recycle": 1800,
+        "pool_pre_ping": True,
+    })
 
 engine = create_async_engine(
     settings.DATABASE_URL,

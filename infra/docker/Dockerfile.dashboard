@@ -10,11 +10,15 @@ COPY apps/dashboard/ apps/dashboard/
 
 RUN pnpm install --frozen-lockfile=false
 
-RUN pnpm --filter @websync/dashboard build
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_WS_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
 
-EXPOSE 3000
+RUN pnpm --filter @websync/dashboard build
 
 ENV PORT=3000
 ENV NODE_ENV=production
+EXPOSE 3000
 
-CMD ["pnpm", "--filter", "@websync/dashboard", "start"]
+CMD ["sh", "-c", "pnpm --filter @websync/dashboard start -- -H 0.0.0.0 -p ${PORT:-3000}"]

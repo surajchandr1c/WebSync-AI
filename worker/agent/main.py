@@ -165,20 +165,25 @@ def main():
     )
     parser.add_argument(
         "--coordinator-url",
+        "--coordinator",
         type=str,
         default=None,
-        help="Override coordinator base URL (e.g. http://192.168.1.50:8000)",
+        dest="coordinator_url",
+        help="Override coordinator base URL (e.g. https://coordinator.up.railway.app)",
     )
     parser.add_argument(
         "--worker-id",
         type=str,
         default=None,
+        dest="worker_id",
         help="Override unique worker node identifier",
     )
     parser.add_argument(
         "--worker-name",
+        "--display-name",
         type=str,
         default=None,
+        dest="worker_name",
         help="Override worker node display name",
     )
     args = parser.parse_args()

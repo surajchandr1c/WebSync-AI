@@ -1,0 +1,31 @@
+# Git
+.git
+.gitignore
+
+# Python virtualenvs and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.sqlite
+*.db
+phase9_validation.db
+coordinator.db
+
+# Node.js and Next.js
+node_modules/
+.next/
+dist/
+.turbo/
+
+# Rust and Tauri Desktop
+apps/desktop/src-tauri/target/
+target/
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
