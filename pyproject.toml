@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "websync-ai"
+version = "0.1.0"
+description = "WebSync AI — Distributed Computing Platform"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "websync-coordinator",
+    "websync-worker",
+]
+
+[tool.uv.workspace]
+members = ["services/coordinator", "worker"]
+
+[tool.pytest.ini_options]
+testpaths = ["services/coordinator/tests"]
