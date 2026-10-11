@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from pathlib import Path
 from typing import Dict, Any, Optional
 from worker.agent.config import WorkerSettings
 from worker.agent.metrics import get_static_hardware_specs, sample_system_metrics
@@ -42,8 +43,51 @@ class RegistrationManager:
             "gpu_metadata": specs["gpu_metadata"],
         }
 
+    def _get_token_path(self) -> Path:
+        cache_dir = Path.home() / ".websync" / "tokens"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        safe_id = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in self.settings.WEB_SYNC_WORKER_ID)
+        return cache_dir / f"{safe_id}.token"
+
+    def _read_cached_token(self) -> Optional[str]:
+        p = self._get_token_path()
+        if p.exists():
+            try:
+                token = p.read_text(encoding="utf-8").strip()
+                if token:
+                    return token
+            except Exception:
+                pass
+        return None
+
+    def _save_cached_token(self, token: str) -> None:
+        try:
+            p = self._get_token_path()
+            p.write_text(token, encoding="utf-8")
+        except Exception as e:
+            logger.warning("Could not persist worker enrollment token: %s", e)
+
     async def register_with_retry(self, max_retries: int = 5) -> str:
         """Register worker with coordinator using bounded exponential backoff on transient errors."""
+        # 1. Attempt session resumption if valid cached token exists
+        cached_token = self._read_cached_token()
+        if cached_token:
+            try:
+                metrics = sample_system_metrics()
+                await self.transport.send_heartbeat(payload=metrics, worker_jwt=cached_token)
+                self.assigned_token = cached_token
+                logger.info(
+                    "Resumed active enrollment session for worker '%s' using cached credentials.",
+                    self.settings.WEB_SYNC_WORKER_ID,
+                )
+                return cached_token
+            except Exception as e:
+                logger.info("Cached enrollment token invalid or expired (%s). Re-enrolling with coordinator...", e)
+                try:
+                    self._get_token_path().unlink(missing_ok=True)
+                except Exception:
+                    pass
+
         payload = self.build_registration_payload()
 
         logger.info(
@@ -63,6 +107,7 @@ class RegistrationManager:
                     pre_shared_token=self.settings.WEB_SYNC_WORKER_TOKEN,
                 )
                 self.assigned_token = response["auth_token"]
+                self._save_cached_token(self.assigned_token)
                 self.heartbeat_interval = response.get(
                     "heartbeat_interval_seconds", self.settings.WEB_SYNC_HEARTBEAT_INTERVAL
                 )
