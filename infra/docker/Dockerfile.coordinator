@@ -9,6 +9,7 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
 COPY services/coordinator/pyproject.toml services/coordinator/
+COPY services/coordinator/README.md services/coordinator/
 COPY services/coordinator/alembic.ini services/coordinator/
 COPY services/coordinator/alembic/ services/coordinator/alembic/
 COPY services/coordinator/src/ services/coordinator/src/

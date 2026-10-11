@@ -35,3 +35,7 @@ pythonpath = ["src"]
 asyncio_mode = "auto"
 timeout = 15
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/coordinator"]
+
+
