@@ -57,6 +57,13 @@ export function Header() {
           </div>
         </div>
 
+        {/* Stale Data Warning */}
+        {cluster.isStale && (
+          <Badge variant="warning" className="hidden lg:inline-flex text-[11px] px-2 py-0.5">
+            Stale Data (Polling)
+          </Badge>
+        )}
+
         {/* WebSocket Connection Pill */}
         <div className="flex items-center space-x-1.5">
           {cluster.wsStatus === 'connected' ? (

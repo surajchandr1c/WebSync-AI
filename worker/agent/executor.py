@@ -49,6 +49,16 @@ class ModularJobExecutor:
     def get_active_jobs_count(self) -> int:
         return len(self._active_jobs)
 
+    async def cancel_job(self, job_id: str) -> bool:
+        """Cancel an in-flight job execution task."""
+        async with self._lock:
+            task = self._active_jobs.get(job_id)
+        if task and not task.done():
+            logger.info("Cancelling execution task for job '%s'", job_id)
+            task.cancel()
+            return True
+        return False
+
     async def execute_job(
         self,
         job_id: str,

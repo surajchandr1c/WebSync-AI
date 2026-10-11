@@ -53,6 +53,7 @@ lerna-debug.log*
 .next/
 out/
 .turbo/
+*.tsbuildinfo
 
 # Desktop / Tauri / Rust
 apps/desktop/src-tauri/target/

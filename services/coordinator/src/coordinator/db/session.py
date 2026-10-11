@@ -12,10 +12,18 @@ from coordinator.db.base import Base
 logger = logging.getLogger("coordinator.db")
 
 # Build async engine
+engine_kwargs = {
+    "echo": (settings.LOG_LEVEL.upper() == "DEBUG"),
+    "future": True,
+}
+if "sqlite" in settings.DATABASE_URL:
+    from sqlalchemy.pool import NullPool
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+    engine_kwargs["poolclass"] = NullPool
+
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=(settings.LOG_LEVEL.upper() == "DEBUG"),
-    future=True,
+    **engine_kwargs,
 )
 
 async_session_factory = async_sessionmaker(

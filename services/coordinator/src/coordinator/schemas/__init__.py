@@ -22,6 +22,19 @@ from .job import (
     JobEventResponse,
     JobEventListResponse,
 )
+from .protocol import (
+    ProtocolMessageType,
+    BaseMessageEnvelope,
+    WorkerConnAckPayload,
+    HeartbeatPayload,
+    JobDispatchPayload,
+    JobAckPayload,
+    JobStartedPayload,
+    JobProgressPayload,
+    JobResultPayload,
+    JobCancelPayload,
+    ProtocolErrorPayload,
+)
 
 __all__ = [
     "HealthResponse",
@@ -45,4 +58,15 @@ __all__ = [
     "JobStatusUpdateRequest",
     "JobEventResponse",
     "JobEventListResponse",
+    "ProtocolMessageType",
+    "BaseMessageEnvelope",
+    "WorkerConnAckPayload",
+    "HeartbeatPayload",
+    "JobDispatchPayload",
+    "JobAckPayload",
+    "JobStartedPayload",
+    "JobProgressPayload",
+    "JobResultPayload",
+    "JobCancelPayload",
+    "ProtocolErrorPayload",
 ]

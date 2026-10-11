@@ -213,12 +213,58 @@ class WorkerService:
         return worker_to_response(worker)
 
     @staticmethod
+    async def check_and_mark_stale_workers(
+        db: AsyncSession,
+        timeout_seconds: Optional[float] = None,
+    ) -> List[str]:
+        """Detect workers whose last heartbeat has expired, mark them offline, and clean up assignments."""
+        timeout = timeout_seconds or float(settings.WORKER_HEARTBEAT_TIMEOUT_SECONDS)
+        now = datetime.now(timezone.utc)
+
+        stmt = select(Worker).where(
+            Worker.connection_status.in_(["online", "busy"]),
+            Worker.is_revoked == False,
+        )
+        active_workers = (await db.execute(stmt)).scalars().all()
+        stale_worker_ids = []
+
+        from coordinator.scheduler.engine import scheduler_engine
+
+        for worker in active_workers:
+            if not worker.last_heartbeat:
+                is_stale = True
+            else:
+                last_hb = worker.last_heartbeat
+                if last_hb.tzinfo is None:
+                    last_hb = last_hb.replace(tzinfo=timezone.utc)
+                is_stale = (now - last_hb).total_seconds() > timeout
+
+            if is_stale:
+                worker.connection_status = "offline"
+                stale_worker_ids.append(worker.worker_id)
+                await scheduler_engine.handle_worker_disconnect_cleanup(db, worker.worker_id)
+                await ws_manager.broadcast(
+                    "worker.updated",
+                    {
+                        "worker_id": worker.worker_id,
+                        "status": "offline",
+                        "reason": "heartbeat_timeout",
+                    },
+                )
+
+        if stale_worker_ids:
+            await db.commit()
+
+        return stale_worker_ids
+
+    @staticmethod
     async def list_workers(
         db: AsyncSession,
         status_filter: Optional[str] = None,
         skip: int = 0,
         limit: int = 50,
     ) -> Tuple[List[WorkerResponse], int]:
+        await WorkerService.check_and_mark_stale_workers(db)
         stmt = select(Worker).order_by(Worker.registered_at.desc())
         all_workers = (await db.execute(stmt)).scalars().all()
 

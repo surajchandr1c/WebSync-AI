@@ -14,7 +14,7 @@ from coordinator.schemas.job import (
     JobState,
     VALID_JOB_TRANSITIONS,
 )
-from coordinator.ws.manager import ws_manager
+from coordinator.ws.manager import ws_manager, worker_ws_manager
 from coordinator.scheduler.engine import scheduler_engine
 from coordinator.services.dispatcher_service import DispatcherService
 
@@ -149,9 +149,10 @@ class JobService:
                 detail=f"Cannot cancel job in terminal state '{job.status}'.",
             )
 
-        # Release worker capacity if assigned
+        # Release worker capacity if assigned and dispatch cancel signal to worker
         if job.assigned_worker_id and current_state in (JobState.SCHEDULED, JobState.RUNNING):
             await scheduler_engine.release_capacity(db, job.assigned_worker_id)
+            await worker_ws_manager.cancel_job_on_worker(job.assigned_worker_id, job.job_id)
 
         now = datetime.now(timezone.utc)
         job.status = JobState.CANCELLED.value
@@ -168,7 +169,14 @@ class JobService:
         await db.commit()
         await db.refresh(job)
 
-        # Broadcast update
+        # Broadcast update and cancellation
+        await ws_manager.broadcast(
+            "job.cancelled",
+            {
+                "job_id": job.job_id,
+                "status": job.status,
+            },
+        )
         await ws_manager.broadcast(
             "job.updated",
             {

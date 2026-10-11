@@ -2,14 +2,15 @@ import asyncio
 from datetime import datetime, timezone
 import json
 import logging
-from typing import Set, Dict, Any
+from typing import Set, Dict, Any, Optional
+import uuid
 from fastapi import WebSocket
 
 logger = logging.getLogger("coordinator.ws")
 
 
 class WebSocketManager:
-    """Manages connected WebSocket clients and event broadcasting."""
+    """Manages connected dashboard WebSocket clients and structured event broadcasting."""
 
     def __init__(self):
         self._active_connections: Set[WebSocket] = set()
@@ -20,20 +21,36 @@ class WebSocketManager:
         await websocket.accept()
         async with self._lock:
             self._active_connections.add(websocket)
-        logger.info("WebSocket client connected. Active clients: %d", len(self._active_connections))
+        logger.info("Dashboard WebSocket client connected. Active clients: %d", len(self._active_connections))
 
     async def disconnect(self, websocket: WebSocket) -> None:
         """Remove WebSocket connection."""
         async with self._lock:
             self._active_connections.discard(websocket)
-        logger.info("WebSocket client disconnected. Active clients: %d", len(self._active_connections))
+        logger.info("Dashboard WebSocket client disconnected. Active clients: %d", len(self._active_connections))
 
-    async def broadcast(self, event_name: str, data: Dict[str, Any]) -> None:
-        """Broadcast structured event to all active dashboard clients."""
+    async def broadcast(
+        self,
+        event_name: str,
+        data: Dict[str, Any],
+        correlation_id: Optional[str] = None,
+        job_id: Optional[str] = None,
+        worker_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+    ) -> None:
+        """Broadcast standardized versioned event envelope to all active dashboard clients."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        msg_id = message_id or str(uuid.uuid4())
         payload = {
+            "type": event_name,
             "event": event_name,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "message_id": msg_id,
+            "timestamp": now_iso,
+            "correlation_id": correlation_id,
+            "job_id": job_id or data.get("job_id"),
+            "worker_id": worker_id or data.get("worker_id"),
             "data": data,
+            "payload": data,
         }
         text_data = json.dumps(payload)
 
@@ -93,6 +110,20 @@ class WorkerConnectionManager:
             logger.error("Failed to dispatch job to worker '%s': %s", worker_id, str(e))
             await self.unregister_worker(worker_id)
             return False
+
+    async def cancel_job_on_worker(
+        self, worker_id: str, job_id: str, reason: Optional[str] = None
+    ) -> bool:
+        """Send job.cancel envelope to assigned worker node."""
+        envelope = {
+            "type": "job.cancel",
+            "message_id": str(uuid.uuid4()),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "job_id": job_id,
+            "worker_id": worker_id,
+            "payload": {"job_id": job_id, "reason": reason or "Cancelled by operator"},
+        }
+        return await self.dispatch_job_to_worker(worker_id, envelope)
 
 
 # Global singleton worker WebSocket manager

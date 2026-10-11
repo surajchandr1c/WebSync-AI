@@ -7,6 +7,7 @@ import {
   WorkerResponse,
   JobResponse,
   JobEventResponse,
+  BaseMessageEnvelope,
 } from '@websync/shared-types';
 
 export interface TelemetryPoint {
@@ -22,6 +23,7 @@ interface ClusterContextType {
   coordinatorUrl: string;
   wsUrl: string;
   wsStatus: 'connected' | 'connecting' | 'disconnected';
+  isStale: boolean;
   client: WebSyncClient;
   health: HealthResponse | null;
   healthError: string | null;
@@ -48,6 +50,8 @@ const DEFAULT_COORDINATOR_URL =
 const DEFAULT_WS_URL =
   process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws/dashboard';
 
+const TERMINAL_STATES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
+
 export function ClusterProvider({ children }: { children: React.ReactNode }) {
   const [coordinatorUrl, setCoordinatorUrlState] = useState<string>(DEFAULT_COORDINATOR_URL);
   const [wsUrl, setWsUrl] = useState<string>(DEFAULT_WS_URL);
@@ -65,6 +69,12 @@ export function ClusterProvider({ children }: { children: React.ReactNode }) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef<number>(0);
+  const processedMessageIdsRef = useRef<Set<string>>(new Set());
+
+  // Determine if data is potentially stale (> 20s without sync when disconnected)
+  const isStale =
+    wsStatus !== 'connected' &&
+    (!lastSync || Date.now() - lastSync.getTime() > 20000);
 
   const setCoordinatorUrl = (url: string) => {
     setCoordinatorUrlState(url);
@@ -155,24 +165,26 @@ export function ClusterProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(false);
   }, [refreshHealth, refreshWorkers, refreshJobs, refreshEvents]);
 
-  // Initial load
+  // Initial authoritative baseline load
   useEffect(() => {
     refreshAll();
   }, [refreshAll]);
 
-  // Fallback periodic poll every 10 seconds
+  // Adaptive background polling: 30s when WebSocket connected, 6s when disconnected fallback
   useEffect(() => {
+    const pollInterval = wsStatus === 'connected' ? 30000 : 6000;
     const interval = setInterval(() => {
       refreshHealth();
       refreshWorkers();
       refreshJobs();
       refreshEvents();
       setLastSync(new Date());
-    }, 10000);
-    return () => clearInterval(interval);
-  }, [refreshHealth, refreshWorkers, refreshJobs, refreshEvents]);
+    }, pollInterval);
 
-  // WebSocket Connection & Real-Time Event Dispatcher
+    return () => clearInterval(interval);
+  }, [wsStatus, refreshHealth, refreshWorkers, refreshJobs, refreshEvents]);
+
+  // WebSocket Connection & Real-Time Event Dispatcher with Envelope Handling & Deduplication
   useEffect(() => {
     let isCancelled = false;
 
@@ -187,12 +199,29 @@ export function ClusterProvider({ children }: { children: React.ReactNode }) {
           if (isCancelled) return;
           setWsStatus('connected');
           reconnectAttemptsRef.current = 0;
+          // Authoritative synchronization upon connecting/reconnecting
+          refreshAll();
         };
 
         ws.onmessage = (event) => {
           if (isCancelled) return;
           try {
             const parsed = JSON.parse(event.data);
+            const msgId = parsed.message_id || parsed.id;
+
+            // Deduplication guard: ignore previously processed messages
+            if (msgId) {
+              if (processedMessageIdsRef.current.has(msgId)) {
+                return;
+              }
+              processedMessageIdsRef.current.add(msgId);
+              // Cap memory size of tracked IDs to 300
+              if (processedMessageIdsRef.current.size > 300) {
+                const first = processedMessageIdsRef.current.values().next().value;
+                if (first) processedMessageIdsRef.current.delete(first);
+              }
+            }
+
             const eventName = parsed.event || parsed.type;
             const data = parsed.data || parsed.payload || {};
 
@@ -200,25 +229,44 @@ export function ClusterProvider({ children }: { children: React.ReactNode }) {
             if (eventName.startsWith('worker.')) {
               refreshWorkers();
             } else if (eventName.startsWith('job.')) {
+              const jobId = data.job_id || parsed.job_id;
+              const newStatus = data.status;
+
+              // Terminal state overwrite guard
+              if (jobId && newStatus) {
+                setJobs((currentJobs) =>
+                  currentJobs.map((j) => {
+                    if (j.job_id === jobId) {
+                      // Do not overwrite terminal states with older non-terminal events
+                      if (TERMINAL_STATES.has(j.status) && !TERMINAL_STATES.has(newStatus)) {
+                        return j;
+                      }
+                      return { ...j, status: newStatus };
+                    }
+                    return j;
+                  })
+                );
+              }
+
               refreshJobs();
               refreshEvents();
             }
 
-            // If it's a known audit event, prepend to events list
-            if (parsed.event && parsed.data) {
+            // Append audit event
+            if (eventName && data) {
               const syntheticEvent: JobEventResponse = {
-                id: `ws-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-                job_id: data.job_id || 'system',
+                id: msgId || `ws-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+                job_id: data.job_id || parsed.job_id || 'system',
                 event_type: eventName.toUpperCase().replace('.', '_'),
                 details: data,
-                created_at: new Date().toISOString(),
+                created_at: parsed.timestamp || new Date().toISOString(),
               };
               setEvents((prev) => [syntheticEvent, ...prev.slice(0, 99)]);
             }
 
             setLastSync(new Date());
           } catch (e) {
-            console.debug('WS parse error:', e);
+            console.debug('WS message parse error:', e);
           }
         };
 
@@ -230,13 +278,17 @@ export function ClusterProvider({ children }: { children: React.ReactNode }) {
         ws.onclose = () => {
           if (isCancelled) return;
           setWsStatus('disconnected');
-          // Exponential backoff reconnect
-          const delay = Math.min(10000, 1000 * Math.pow(1.5, reconnectAttemptsRef.current++));
+          // Exponential backoff with random jitter (max 15s)
+          reconnectAttemptsRef.current += 1;
+          const exp = Math.min(15000, 1000 * Math.pow(1.4, reconnectAttemptsRef.current));
+          const jitter = Math.random() * 1000;
+          const delay = Math.round(exp + jitter);
+
           reconnectTimerRef.current = setTimeout(connectWs, delay);
         };
       } catch (err) {
         setWsStatus('disconnected');
-        const delay = Math.min(10000, 1000 * Math.pow(1.5, reconnectAttemptsRef.current++));
+        const delay = Math.min(10000, 1000 * Math.pow(1.4, reconnectAttemptsRef.current++));
         reconnectTimerRef.current = setTimeout(connectWs, delay);
       }
     };
@@ -251,7 +303,7 @@ export function ClusterProvider({ children }: { children: React.ReactNode }) {
         wsRef.current = null;
       }
     };
-  }, [wsUrl, refreshWorkers, refreshJobs, refreshEvents]);
+  }, [wsUrl, refreshAll, refreshWorkers, refreshJobs, refreshEvents]);
 
   return (
     <ClusterContext.Provider
@@ -259,6 +311,7 @@ export function ClusterProvider({ children }: { children: React.ReactNode }) {
         coordinatorUrl,
         wsUrl,
         wsStatus,
+        isStale,
         client: clientRef.current,
         health,
         healthError,

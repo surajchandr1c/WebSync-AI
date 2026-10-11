@@ -86,17 +86,29 @@ class WorkerDaemon:
                 active_jobs_provider=self.executor.get_active_jobs_count,
             )
 
-            # 3. Setup job dispatcher
+            # 3. Setup job dispatcher (HTTP fallback)
             from worker.agent.capabilities import get_supported_workloads
             from worker.agent.dispatcher import WorkerDispatcher
+            from worker.agent.ws_client import WorkerWebSocketClient
+
+            supported_workloads = get_supported_workloads()
 
             dispatcher = WorkerDispatcher(
                 transport=transport,
                 executor=self.executor,
                 worker_id=self.cfg.WEB_SYNC_WORKER_ID,
                 worker_jwt=auth_token,
-                supported_workloads=get_supported_workloads(),
-                poll_interval_seconds=1.0,
+                supported_workloads=supported_workloads,
+                poll_interval_seconds=3.0,
+            )
+
+            # 4. Setup real-time WebSocket client
+            ws_client = WorkerWebSocketClient(
+                coordinator_url=self.cfg.WEB_SYNC_COORDINATOR_URL,
+                worker_id=self.cfg.WEB_SYNC_WORKER_ID,
+                worker_jwt=auth_token,
+                executor=self.executor,
+                supported_workloads=supported_workloads,
             )
 
             if single_heartbeat_only:
@@ -110,18 +122,21 @@ class WorkerDaemon:
 
             heartbeat_task = asyncio.create_task(heartbeat.run())
             dispatcher_task = asyncio.create_task(dispatcher.run())
+            ws_task = asyncio.create_task(ws_client.run())
 
             try:
                 # Wait until stop requested
                 await self._stop_event.wait()
             finally:
                 logger.info("Shutdown signal received. Stopping worker services...")
+                await ws_client.close()
                 dispatcher.stop()
                 heartbeat.stop()
+                ws_task.cancel()
                 dispatcher_task.cancel()
                 heartbeat_task.cancel()
                 try:
-                    await asyncio.gather(heartbeat_task, dispatcher_task, return_exceptions=True)
+                    await asyncio.gather(heartbeat_task, dispatcher_task, ws_task, return_exceptions=True)
                 except Exception:
                     pass
 

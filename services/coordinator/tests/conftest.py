@@ -6,33 +6,26 @@ from typing import AsyncGenerator
 import httpx
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
+import tempfile
+
 # Override settings before importing app
 os.environ["ENVIRONMENT"] = "test"
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+_temp_db = os.path.join(tempfile.gettempdir(), "test_websync_coordinator.db").replace("\\", "/")
+os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_temp_db}"
 os.environ["COORDINATOR_SECRET_KEY"] = "test-secret-key-that-is-at-least-32-chars-long"
 os.environ["WORKER_DEV_AUTH_TOKEN"] = "test-dev-worker-token"
 os.environ["WORKER_HEARTBEAT_TIMEOUT_SECONDS"] = "2"
 
 from coordinator.config import settings
 from coordinator.db.base import Base
-from coordinator.db.session import get_db
+from coordinator.db.session import (
+    engine as test_engine,
+    async_session_factory as TestingSessionLocal,
+    get_db,
+)
 from coordinator.main import app
 from coordinator.core.security import hash_password, create_access_token
 from coordinator.models.user import User
-
-# Test in-memory database engine
-test_engine = create_async_engine(
-    "sqlite+aiosqlite:///:memory:",
-    future=True,
-)
-
-TestingSessionLocal = async_sessionmaker(
-    bind=test_engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-    autocommit=False,
-    autoflush=False,
-)
 
 
 @pytest_asyncio.fixture(scope="function", autouse=True)
