@@ -13,6 +13,7 @@ interface HealthData {
   uptime_seconds: number;
   python_version: string;
   environment: string;
+  database: 'healthy' | 'unhealthy';
 }
 
 export function ConnectionStatus() {
@@ -60,14 +61,18 @@ export function ConnectionStatus() {
               className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${
                 loading
                   ? 'bg-amber-400 animate-ping'
-                  : data
+                  : data && data.status === 'healthy'
                   ? 'bg-emerald-400 animate-ping'
                   : 'bg-rose-400 animate-pulse'
               }`}
             />
             <span
               className={`relative inline-flex rounded-full h-3 w-3 ${
-                loading ? 'bg-amber-500' : data ? 'bg-emerald-500' : 'bg-rose-500'
+                loading
+                  ? 'bg-amber-500'
+                  : data && data.status === 'healthy'
+                  ? 'bg-emerald-500'
+                  : 'bg-rose-500'
               }`}
             />
           </div>
@@ -79,7 +84,12 @@ export function ConnectionStatus() {
 
         <div className="flex items-center space-x-3">
           {loading && <Badge variant="warning">Checking...</Badge>}
-          {!loading && data && <Badge variant="success">Connected & Healthy</Badge>}
+          {!loading && data && data.status === 'healthy' && (
+            <Badge variant="success">Connected & Healthy</Badge>
+          )}
+          {!loading && data && data.status === 'degraded' && (
+            <Badge variant="warning">Degraded (DB Unhealthy)</Badge>
+          )}
           {!loading && error && <Badge variant="danger">Disconnected</Badge>}
           <Button variant="secondary" size="sm" onClick={fetchHealth} disabled={loading}>
             Ping API
@@ -89,7 +99,7 @@ export function ConnectionStatus() {
 
       <CardContent>
         {data ? (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-2">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 pt-2">
             <div className="bg-[#161f33] p-3 rounded-lg border border-blue-900/30">
               <span className="text-xs text-gray-400 block">Service</span>
               <span className="text-sm font-semibold text-white truncate block">{data.service}</span>
@@ -102,6 +112,18 @@ export function ConnectionStatus() {
                 {data.uptime_seconds.toFixed(1)}s
               </span>
               <span className="text-[11px] text-gray-500 block">Live session</span>
+            </div>
+
+            <div className="bg-[#161f33] p-3 rounded-lg border border-blue-900/30">
+              <span className="text-xs text-gray-400 block">Database</span>
+              <span
+                className={`text-sm font-semibold font-mono ${
+                  data.database === 'healthy' ? 'text-emerald-400' : 'text-rose-400'
+                }`}
+              >
+                {data.database === 'healthy' ? 'Connected' : 'Unhealthy'}
+              </span>
+              <span className="text-[11px] text-gray-500 block">SQLAlchemy</span>
             </div>
 
             <div className="bg-[#161f33] p-3 rounded-lg border border-blue-900/30">

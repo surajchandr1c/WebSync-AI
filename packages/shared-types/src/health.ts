@@ -6,4 +6,5 @@ export interface HealthResponse {
   uptime_seconds: number;
   python_version: string;
   environment: string;
+  database: 'healthy' | 'unhealthy';
 }

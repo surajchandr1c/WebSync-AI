@@ -1,146 +1,245 @@
-# WebSync AI — API Specification
+# WebSync AI — Coordinator API Specification (Phase 2)
 
 ## Base URL
 - Production: `https://<coordinator-host>/api/v1`
 - Local Development: `http://localhost:8000/api/v1`
-- WebSocket Endpoint: `ws://localhost:8000/ws`
+- WebSocket Endpoint: `ws://localhost:8000/ws/dashboard`
 
-All request and response bodies use standard `application/json` format unless streaming logs or binary job artifacts.
+All request and response bodies use standard `application/json` format.
 
 ---
 
-## 1. System & Health
+## 1. System Health
 
 ### `GET /api/v1/health`
-Returns the operational health and environment metadata of the coordinator.
+Returns real-time service uptime, API version, and live database connectivity status.
 
 **Response `200 OK`**:
 ```json
 {
   "status": "healthy",
-  "service": "coordinator",
-  "version": "0.1.0",
-  "timestamp": "2026-10-11T17:10:00Z",
-  "uptime_seconds": 124.5,
-  "database": "connected"
+  "service": "WebSync AI Coordinator",
+  "version": "0.2.0",
+  "timestamp": "2026-10-11T17:35:00Z",
+  "uptime_seconds": 128.4,
+  "python_version": "3.13.5",
+  "environment": "development",
+  "database": "healthy"
 }
 ```
 
 ---
 
-## 2. Worker Lifecycle & Telemetry
+## 2. Authentication & User Management
 
-### `POST /api/v1/workers/register`
-Invoked by a worker node upon startup to register itself with the coordinator.
+### `POST /api/v1/auth/register`
+Registers an operator or admin user account.
 
 **Request Body**:
 ```json
 {
-  "worker_id": "worker-linux-01",
-  "hostname": "arch-desktop",
-  "platform": "Linux",
-  "platform_version": "6.12.1-zen",
-  "cpu_count_logical": 16,
-  "cpu_count_physical": 8,
-  "total_memory_bytes": 34359738368,
-  "gpu_info": [
-    {
-      "name": "NVIDIA GeForce RTX 4070",
-      "memory_total_bytes": 12884901888
-    }
-  ],
-  "supported_runtimes": ["python", "shell"]
+  "username": "operator1",
+  "email": "operator1@websync.ai",
+  "password": "secure_password_123",
+  "role": "operator"
 }
 ```
 
 **Response `201 Created`**:
 ```json
 {
-  "status": "registered",
-  "worker_id": "worker-linux-01",
-  "heartbeat_interval_seconds": 10,
-  "assigned_token": "jwt-or-session-token"
+  "id": "e81d7d08-4d51-40be-a006-2c5e53303666",
+  "username": "operator1",
+  "email": "operator1@websync.ai",
+  "role": "operator",
+  "is_active": true,
+  "created_at": "2026-10-11T17:35:10Z"
 }
 ```
 
-### `POST /api/v1/workers/{worker_id}/heartbeat`
-Periodic ping sent by active workers providing real-time hardware telemetry.
+### `POST /api/v1/auth/login`
+Authenticates user credentials and issues a short-lived Bearer JWT token.
+
+**Response `200 OK`**:
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in_seconds": 3600
+}
+```
+
+### `GET /api/v1/auth/me`
+Retrieves authenticated profile. Requires `Authorization: Bearer <user_token>`.
+
+---
+
+## 3. Worker Node Lifecycle & Telemetry
+
+### `POST /api/v1/workers/register`
+Registers a worker node with the coordinator and issues a scoped worker token.
+**Headers**: `X-Worker-Auth-Token: <dev-token>` or `Authorization: Bearer <token>`
 
 **Request Body**:
 ```json
 {
-  "timestamp": "2026-10-11T17:10:10Z",
-  "cpu_percent": 18.4,
-  "memory_used_bytes": 8589934592,
-  "memory_available_bytes": 25769803776,
-  "disk_free_bytes": 429496729600,
-  "active_jobs_count": 1,
-  "gpu_metrics": [
+  "worker_id": "worker-linux-01",
+  "display_name": "Lab Arch Workstation",
+  "hostname": "arch-desktop",
+  "platform": "Linux",
+  "platform_version": "6.12.1-zen",
+  "cpu_utilization": 14.2,
+  "total_ram_bytes": 34359738368,
+  "available_ram_bytes": 28991029248,
+  "supported_workloads": ["matrix_multiply", "data_processing", "image_processing"],
+  "gpu_available": true,
+  "gpu_metadata": [
     {
-      "utilization_percent": 42.0,
-      "memory_used_bytes": 4294967296
+      "name": "NVIDIA GeForce RTX 4070",
+      "memory_total_bytes": 12884901888
     }
   ]
 }
 ```
 
-### `GET /api/v1/workers`
-Returns a list of all registered workers and their current statuses. Query parameters support filtering by status (`online`, `busy`, `offline`).
+**Response `201 Created`**:
+```json
+{
+  "worker_id": "worker-linux-01",
+  "display_name": "Lab Arch Workstation",
+  "hostname": "arch-desktop",
+  "platform": "Linux",
+  "connection_status": "online",
+  "auth_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "heartbeat_interval_seconds": 10
+}
+```
 
----
-
-## 3. Distributed Job Lifecycle
-
-### `POST /api/v1/jobs`
-Submits a computational workload for scheduling.
+### `POST /api/v1/workers/heartbeat`
+Updates real-time resource telemetry and refreshes online status.
+**Headers**: `Authorization: Bearer <worker_token>`
 
 **Request Body**:
 ```json
 {
-  "name": "data-crunch-batch-01",
-  "runtime": "python",
-  "entrypoint": "main.py",
-  "payload_url": null,
-  "script_content": "import math; print(math.factorial(500))",
-  "requirements": {
-    "min_cpu_cores": 2,
-    "min_ram_mb": 1024,
-    "gpu_required": false
-  },
-  "timeout_seconds": 300
+  "cpu_utilization": 22.8,
+  "available_ram_bytes": 25769803776,
+  "active_job_count": 0,
+  "gpu_metadata": []
 }
 ```
 
-**Response `202 Accepted`**:
-```json
-{
-  "job_id": "job-7b89f2a4",
-  "status": "queued",
-  "created_at": "2026-10-11T17:10:15Z"
-}
-```
+**Response `200 OK`**: returns updated `WorkerResponse`.
 
-### `GET /api/v1/jobs/{job_id}`
-Retrieves job status, assigned worker, start/completion times, exit code, and execution summary.
+### `GET /api/v1/workers`
+Returns a paginated list of registered workers. Dynamic status evaluation marks nodes as `offline` if their heartbeat exceeds `WORKER_HEARTBEAT_TIMEOUT_SECONDS`.
 
-### `GET /api/v1/jobs/{job_id}/logs`
-Fetches real-time or completed standard output and error streams.
+**Query Parameters**:
+- `status`: optional filter (`online`, `busy`, `draining`, `offline`, `disconnected`)
+- `page`: default `1`
+- `page_size`: default `50` (max 100)
+
+### `GET /api/v1/workers/{worker_id}`
+Returns details for a single worker node.
+
+### `POST /api/v1/workers/{worker_id}/disconnect`
+Sets worker status to `disconnected` and broadcasts `worker.disconnected` event.
 
 ---
 
-## 4. WebSocket Real-Time Feeds
+## 4. Job Management
 
-### `ws://localhost:8000/ws/dashboard`
-Stream for web dashboard clients. Pushes:
-- `worker_connected`
-- `worker_heartbeat`
-- `worker_disconnected`
-- `job_submitted`
-- `job_dispatched`
-- `job_completed`
-- `cluster_metrics`
+### Approved Workload Types
+1. `matrix_multiply`: Distributed linear algebra computations.
+2. `data_processing`: Large dataset transforms and aggregations.
+3. `image_processing`: Batch image transformations and resizing.
 
-### `ws://localhost:8000/ws/worker/{worker_id}`
-Bi-directional control channel between coordinator and worker node:
-- Worker -> Coordinator: Heartbeat & live job stdout/stderr frames.
-- Coordinator -> Worker: Task dispatch commands (`dispatch_job`, `cancel_job`).
+### Job State Lifecycle
+```text
+  ┌─────────┐       ┌───────────┐       ┌─────────┐       ┌───────────┐
+  │ QUEUED  │ ───>  │ SCHEDULED │ ───>  │ RUNNING │ ───>  │ COMPLETED │
+  └─────────┘       └───────────┘       └─────────┘       └───────────┘
+       │                  │                  │
+       v                  v                  v
+  ┌───────────┐      ┌───────────┐      ┌─────────┐
+  │ CANCELLED │      │ CANCELLED │      │ FAILED  │
+  └───────────┘      └───────────┘      └─────────┘
+```
+
+### `POST /api/v1/jobs`
+Submits a computational workload.
+
+**Request Body**:
+```json
+{
+  "name": "matrix-benchmark-1000",
+  "job_type": "matrix_multiply",
+  "input_payload": {
+    "dimension": 1000,
+    "seed": 42
+  },
+  "requirements": {
+    "min_cpu_cores": 4,
+    "min_ram_mb": 2048,
+    "gpu_required": false
+  }
+}
+```
+
+**Response `201 Created`**:
+```json
+{
+  "job_id": "97e6820c-99c0-43b9-913a-a5f1a5472856",
+  "name": "matrix-benchmark-1000",
+  "job_type": "matrix_multiply",
+  "status": "QUEUED",
+  "input_payload": { "dimension": 1000, "seed": 42 },
+  "requirements": { "min_cpu_cores": 4, "min_ram_mb": 2048, "gpu_required": false },
+  "created_at": "2026-10-11T17:35:30Z"
+}
+```
+
+### `GET /api/v1/jobs`
+List submitted jobs with pagination and optional filters (`status`, `job_type`).
+
+### `GET /api/v1/jobs/{job_id}`
+Get job details, assignment, and status.
+
+### `POST /api/v1/jobs/{job_id}/cancel`
+Requests cancellation of a non-terminal job.
+
+### `GET /api/v1/jobs/{job_id}/result`
+Retrieves completion output and execution summary for `COMPLETED` or `FAILED` jobs.
+
+### `PATCH /api/v1/jobs/{job_id}/status`
+Transitions job execution state according to the valid state machine.
+
+---
+
+## 5. WebSocket Real-Time Events
+
+### `WS /ws/dashboard`
+Connect to receive real-time JSON frames emitted when coordinator state changes:
+
+```json
+{
+  "event": "worker.updated",
+  "timestamp": "2026-10-11T17:35:45.123456Z",
+  "data": {
+    "worker_id": "worker-linux-01",
+    "cpu_utilization": 34.5,
+    "available_ram_bytes": 22000000000,
+    "active_job_count": 1,
+    "status": "busy"
+  }
+}
+```
+
+**Published Events**:
+- `worker.connected`
+- `worker.updated`
+- `worker.disconnected`
+- `job.created`
+- `job.updated`
+- `job.completed`
+- `job.failed`

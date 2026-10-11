@@ -14,12 +14,14 @@ flowchart TD
     end
 
     subgraph Core["Central Coordinator (services/coordinator)"]
-        FastAPI["FastAPI REST & WebSockets\n(/api/v1 & /ws)"]
+        FastAPI["FastAPI REST & WebSockets\n(/api/v1 & /ws/dashboard)"]
         Registry["Worker Node Registry"]
-        Scheduler["Adaptive Workload Scheduler"]
-        DB[(PostgreSQL / SQLite)]
+        JobManager["Job Lifecycle & State Transitions"]
+        Auth["JWT & Role-Based Auth Engine"]
+        DB[(PostgreSQL / SQLite\nSQLAlchemy + Alembic)]
         FastAPI --> Registry
-        FastAPI --> Scheduler
+        FastAPI --> JobManager
+        FastAPI --> Auth
         FastAPI --> DB
     end
 
@@ -37,13 +39,6 @@ flowchart TD
     Worker2 -->|Outbound HTTPS / WSS| FastAPI
 ```
 
-### Architectural Principles
-
-1. **Authentic Workload Execution**: No simulations or fake telemetry. Worker resource metrics are sampled via `psutil`, and workloads execute within isolated OS-level subprocesses.
-2. **Zero Inbound Port Forwarding**: Worker nodes initiate outbound TLS/HTTP/WebSocket connections to the coordinator, allowing computers behind standard home NAT and firewalls to participate without special network configuration.
-3. **Discrete Node Isolation**: Memory and GPU resources are **not** pooled into a virtual unified memory pool. Workloads are scheduled to discrete machines matching required hardware quotas.
-4. **Clean Monorepo Boundaries**: The backend coordinator, worker agent, desktop application, and web dashboard are strictly decoupled and share typed contracts via `@websync/shared-types` and `@websync/api-client`.
-
 ---
 
 ## Monorepo Structure
@@ -54,7 +49,11 @@ WebSync_AI/
 │   ├── dashboard/          # Next.js 15 web dashboard with Tailwind CSS & live health monitor
 │   └── desktop/            # Tauri 2 native desktop application scaffold (Vite + React)
 ├── services/
-│   └── coordinator/        # FastAPI central orchestration service & health endpoint
+│   └── coordinator/        # FastAPI central orchestration service (Auth, Registry, Jobs, DB, WS)
+│       ├── alembic/        # Alembic database schema migrations
+│       ├── src/coordinator/# Routers, models, schemas, services, and core utilities
+│       ├── tests/          # Pytest automated test suite (16 comprehensive tests)
+│       └── alembic.ini     # Alembic configuration
 ├── worker/
 │   ├── agent/              # Python worker node agent (psutil telemetry & executor)
 │   └── jobs/               # Workload definitions and execution samples
@@ -63,7 +62,7 @@ WebSync_AI/
 │   ├── api-client/         # Shared typed API client for coordinator communication
 │   └── ui/                 # Reusable design tokens, constants, and navigation models
 ├── infra/
-│   ├── docker/             # Docker Compose and Dockerfile specifications
+│   ├── docker/             # Docker Compose (PostgreSQL, Coordinator, Dashboard) & Dockerfiles
 │   └── deployment/         # Network and cluster deployment guides
 ├── docs/
 │   ├── architecture.md     # In-depth architectural design, networking, and boundaries
@@ -78,17 +77,6 @@ WebSync_AI/
 
 ---
 
-## Prerequisites
-
-- **Python**: 3.12 or newer (Python 3.13 tested)
-- **Node.js**: v20 or newer (Node v25 tested)
-- **pnpm** (or `npm` / `npx pnpm`)
-- **Git**
-- *(Optional)* **Docker & Docker Compose** for local PostgreSQL and containerized services
-- *(Optional)* **Rust & Cargo** for building native Tauri binaries (Phase 6)
-
----
-
 ## Quickstart Guide
 
 ### 1. Environment Setup
@@ -98,42 +86,48 @@ Copy the example configuration file:
 cp .env.example .env
 ```
 
-### 2. Python Coordinator & Worker Setup
+### 2. Python Dependencies
 
-Create and activate a virtual environment:
+Activate your virtual environment and install dependencies:
 ```bash
-python -m venv .venv
-
 # On Windows:
 .venv\Scripts\activate
 
 # On Linux/macOS:
 source .venv/bin/activate
+
+pip install fastapi "uvicorn[standard]" pydantic pydantic-settings httpx sqlalchemy "sqlalchemy[asyncio]" alembic aiosqlite pyjwt bcrypt email-validator psutil pytest pytest-asyncio
 ```
 
-Install coordinator and worker dependencies:
+### 3. Database Migrations
+
+Run Alembic migrations to initialize the SQLite or PostgreSQL database:
 ```bash
-pip install fastapi "uvicorn[standard]" pydantic pydantic-settings psutil httpx pytest
+# On Windows:
+$env:PYTHONPATH="services/coordinator/src"; alembic -c services/coordinator/alembic.ini upgrade head
+
+# On Linux/macOS:
+PYTHONPATH="services/coordinator/src" alembic -c services/coordinator/alembic.ini upgrade head
 ```
 
-### 3. Run Backend Coordinator
+### 4. Run Backend Coordinator
 
 Start the FastAPI coordinator:
 ```bash
-# On Windows (PowerShell):
-$env:PYTHONPATH="services/coordinator/src"
-python services/coordinator/src/coordinator/main.py
+# On Windows:
+$env:PYTHONPATH="services/coordinator/src"; python services/coordinator/src/coordinator/main.py
 
 # On Linux/macOS:
 PYTHONPATH="services/coordinator/src" python services/coordinator/src/coordinator/main.py
 ```
 
-The coordinator will start on `http://localhost:8000`:
 - **Interactive Swagger Docs**: `http://localhost:8000/docs`
-- **Real-Time Health Check**: `http://localhost:8000/api/v1/health`
+- **Health Check**: `http://localhost:8000/api/v1/health`
+- **Real-Time WebSockets**: `ws://localhost:8000/ws/dashboard`
 
-### 4. Run Automated Coordinator Tests
+### 5. Run Automated Tests
 
+Execute the automated test suite covering health, auth, workers, jobs, transitions, and WebSockets:
 ```bash
 # On Windows:
 $env:PYTHONPATH="services/coordinator/src"; pytest services/coordinator/tests -v
@@ -142,54 +136,44 @@ $env:PYTHONPATH="services/coordinator/src"; pytest services/coordinator/tests -v
 PYTHONPATH="services/coordinator/src" pytest services/coordinator/tests -v
 ```
 
-### 5. Inspect Worker Hardware Telemetry
-
-Verify genuine system resource sampling using `psutil`:
-```bash
-# On Windows:
-$env:PYTHONPATH="worker"; python worker/agent/main.py --inspect
-
-# On Linux/macOS:
-PYTHONPATH="worker" python worker/agent/main.py --inspect
-```
-
 ### 6. Run the Web Dashboard
 
-Install frontend dependencies:
 ```bash
-pnpm install
-# or
-npx pnpm install
+npx pnpm --filter @websync/dashboard dev
 ```
-
-Start the Next.js development server:
-```bash
-pnpm --filter @websync/dashboard dev
-```
-
-Open `http://localhost:3000` to view the **WebSync AI** dashboard. The dashboard features a live health check card connected to `http://localhost:8000/api/v1/health`.
+Open `http://localhost:3000` to interact with the dashboard.
 
 ---
 
-## Dashboard Navigation Structure
+## Implemented API Endpoints (Phase 2)
 
-| Navigation Section | Status | Description |
+| Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| **Overview** | **Live** | Architecture overview, cluster state summary, and live coordinator health check. |
-| **Workers** | Planned (Phase 2) | Worker fleet overview, hardware metrics, and registration lifecycle. |
-| **Jobs** | Planned (Phase 3) | Workload submission, queue status, and execution output streaming. |
-| **Resource Monitor**| Planned (Phase 4) | Cluster-wide and per-node CPU/RAM/GPU time-series visualizations. |
-| **Activity Logs** | Planned (Phase 5) | WebSocket cluster event stream and security audit logs. |
-| **Settings** | **Configured** | Coordinator endpoints and environment configuration. |
+| `GET` | `/api/v1/health` | Live coordinator uptime, API version, and database connectivity. |
+| `POST` | `/api/v1/auth/register` | Register an operator or administrator user account. |
+| `POST` | `/api/v1/auth/login` | Authenticate and obtain a JWT bearer access token. |
+| `GET` | `/api/v1/auth/me` | Fetch authenticated user profile. |
+| `POST` | `/api/v1/workers/register` | Register a new compute worker node with validation and issue worker token. |
+| `POST` | `/api/v1/workers/heartbeat` | Ingest real-time CPU, RAM, and active jobs telemetry from worker nodes. |
+| `GET` | `/api/v1/workers` | Paginated list of registered workers with stale-heartbeat timeout evaluation. |
+| `GET` | `/api/v1/workers/{worker_id}` | Retrieve details for a single worker node. |
+| `POST` | `/api/v1/workers/{worker_id}/disconnect` | Mark a worker as disconnected and notify dashboard clients. |
+| `POST` | `/api/v1/jobs` | Submit a computational job (`matrix_multiply`, `data_processing`, `image_processing`). |
+| `GET` | `/api/v1/jobs` | Paginated list of jobs with status and job_type filtering. |
+| `GET` | `/api/v1/jobs/{job_id}` | Retrieve job status, requirements, and assignment details. |
+| `POST` | `/api/v1/jobs/{job_id}/cancel` | Cancel a non-terminal queued, scheduled, or running job. |
+| `GET` | `/api/v1/jobs/{job_id}/result` | Retrieve execution exit code, duration, and output for a completed job. |
+| `PATCH` | `/api/v1/jobs/{job_id}/status` | Update execution status with strict state machine validation. |
+| `WS` | `/ws/dashboard` | WebSocket stream broadcasting `worker.*` and `job.*` event notifications. |
 
 ---
 
 ## Roadmap
 
-- **Phase 1: Project Foundation & Architecture** *(Current - Completed)*
-- **Phase 2**: Coordinator Backend & Worker Agent Registration
-- **Phase 3**: Distributed Workload Execution & Modular Runner Engine
+- **Phase 1**: Project Foundation & Architecture *(Completed)*
+- **Phase 2**: Backend Coordinator & Job Management *(Completed)*
+- **Phase 3**: Worker Agent Remote Execution Engine & Task Sandboxing
 - **Phase 4**: Adaptive Scheduling & Resource-Aware Task Placement
-- **Phase 5**: Real-Time Dashboard & Recharts Resource Telemetry
-- **Phase 6**: Security Hardening, mTLS, & Sandboxing
+- **Phase 5**: Real-Time Dashboard UI with Recharts Visualizations
+- **Phase 6**: Security Hardening & Mutual TLS (mTLS)
 - **Phase 7**: Cross-Platform Desktop Packaging (Tauri 2)
