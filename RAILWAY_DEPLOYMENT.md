@@ -222,6 +222,16 @@ The worker agent will:
 - **Cause:** The coordinator container started, but cannot connect to the PostgreSQL database.
 - **Remediation:** Check that the PostgreSQL service in Railway is healthy and accessible via the internal private network (`postgres.railway.internal`).
 
+### 5. Build Error: `sh: 1: pnpm: not found (exit code: 127)`
+- **Cause:** A custom **Build Command** (such as `pnpm --filter @websync/desktop build` or `pnpm --filter @websync/dashboard build`) was entered into Railway's service settings while using a Dockerfile builder.
+- **Why this happens:** When using a Dockerfile, Railway injects any text in the **Build Command** field into the build container. If the service is running `Dockerfile.coordinator` (Python), `pnpm` is not installed! Even for `Dockerfile.dashboard`, the Dockerfile **already** contains the build step.
+- **Remediation:** In Railway $\to$ Service **Settings** $\to$ **Build**:
+  - Leave the **Build Command** field **EMPTY / BLANK**.
+  - Ensure **Dockerfile Path** points to the correct Dockerfile for that service:
+    - Backend: `infra/docker/Dockerfile.coordinator`
+    - Frontend Dashboard: `infra/docker/Dockerfile.dashboard`
+    - Desktop Web Preview (optional): `infra/docker/Dockerfile.desktop`
+
 ---
 
 ## Railway Pricing & Resource Limits Notice
