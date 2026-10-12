@@ -26,6 +26,12 @@ class SlidingWindowRateLimiter:
         while queue and queue[0] < window_start:
             queue.popleft()
 
+        # Evict stale entries if records dictionary grows
+        if len(self._records) > 250:
+            stale_keys = [k for k, q in self._records.items() if not q or q[-1] < window_start]
+            for k in stale_keys:
+                self._records.pop(k, None)
+
         if len(queue) >= max_requests:
             retry_after = int(window_seconds - (now - queue[0])) + 1
             raise HTTPException(

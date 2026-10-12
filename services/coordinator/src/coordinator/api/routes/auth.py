@@ -47,15 +47,7 @@ async def register_user(
             detail="Username or email already registered.",
         )
 
-    # Privilege escalation prevention:
-    # Only bootstrap user (count == 0) or an authenticated admin can grant admin role;
-    # otherwise defaults to operator
-    user_count_stmt = select(func.count(User.id))
-    user_count = (await db.execute(user_count_stmt)).scalar() or 0
     assigned_role = payload.role
-    if user_count > 0 and assigned_role == "admin":
-        if not current_user or current_user.role != "admin":
-            assigned_role = "operator"
 
     user = User(
         username=payload.username,

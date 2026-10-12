@@ -1,10 +1,12 @@
 from typing import Optional, List
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from coordinator.db.session import get_db
 from coordinator.models.worker import Worker
 from coordinator.models.user import User
+from coordinator.models.job import Job
 from coordinator.schemas.worker import (
     WorkerRegistrationRequest,
     WorkerRegistrationResponse,
@@ -12,7 +14,16 @@ from coordinator.schemas.worker import (
     WorkerResponse,
     WorkerListResponse,
 )
+from coordinator.schemas.job import (
+    JobDispatchEnvelope,
+    JobAckMessage,
+    JobStartedMessage,
+    JobResultMessage,
+    JobState,
+)
 from coordinator.services.worker_service import WorkerService
+from coordinator.services.dispatcher_service import DispatcherService
+from coordinator.scheduler.engine import scheduler_engine
 from coordinator.core.auth import (
     verify_worker_registration_auth,
     get_current_worker,
@@ -91,20 +102,6 @@ async def get_worker(
 ) -> WorkerResponse:
     """Retrieve details for specific worker ID."""
     return await WorkerService.get_worker(db=db, worker_id=worker_id)
-
-
-from coordinator.schemas.job import (
-    JobDispatchEnvelope,
-    JobAckMessage,
-    JobStartedMessage,
-    JobResultMessage,
-    JobState,
-)
-from coordinator.models.job import Job
-from coordinator.scheduler.engine import scheduler_engine
-from coordinator.services.dispatcher_service import DispatcherService
-from coordinator.scheduler.engine import scheduler_engine
-from sqlalchemy import select
 
 
 @router.post(

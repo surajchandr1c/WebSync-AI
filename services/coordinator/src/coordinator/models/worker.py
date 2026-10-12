@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
-from sqlalchemy import String, Float, BigInteger, Integer, Boolean, DateTime, JSON
+from sqlalchemy import String, Float, BigInteger, Integer, Boolean, DateTime, JSON, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from coordinator.db.base import Base
 
@@ -9,6 +9,9 @@ class Worker(Base):
     """Worker node registration and state model."""
 
     __tablename__ = "workers"
+    __table_args__ = (
+        Index("ix_workers_status_last_heartbeat", "connection_status", "last_heartbeat"),
+    )
 
     worker_id: Mapped[str] = mapped_column(String(128), primary_key=True, index=True)
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)

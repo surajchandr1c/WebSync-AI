@@ -5,6 +5,7 @@ import time
 from typing import Dict, Any, Optional
 
 import psutil
+import httpx
 
 from worker.agent.config import settings
 
@@ -270,7 +271,6 @@ class ModularJobExecutor:
             req_body["options"] = options
 
         try:
-            import httpx
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 response = await client.post(gen_url, json=req_body)
 

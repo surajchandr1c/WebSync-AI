@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 import uuid
-from sqlalchemy import String, Integer, Float, DateTime, JSON, Text, ForeignKey
+from sqlalchemy import String, Integer, Float, DateTime, JSON, Text, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from coordinator.db.base import Base
 
@@ -10,6 +10,10 @@ class Job(Base):
     """Distributed computational job model."""
 
     __tablename__ = "jobs"
+    __table_args__ = (
+        Index("ix_jobs_assigned_worker_status", "assigned_worker_id", "status"),
+        Index("ix_jobs_status_created_at", "status", "created_at"),
+    )
 
     job_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -18,7 +22,7 @@ class Job(Base):
 
     # Ownership & Assignment
     created_by_user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
-    assigned_worker_id: Mapped[Optional[str]] = mapped_column(String(128), ForeignKey("workers.worker_id"), nullable=True)
+    assigned_worker_id: Mapped[Optional[str]] = mapped_column(String(128), ForeignKey("workers.worker_id"), nullable=True, index=True)
 
     # Payload & Requirements
     input_payload: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)

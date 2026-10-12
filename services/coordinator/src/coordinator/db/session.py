@@ -68,6 +68,14 @@ async def init_db() -> None:
                 await conn.execute(text("ALTER TABLE workers ADD COLUMN supported_models JSON DEFAULT '[]' NOT NULL"))
             except Exception:
                 pass
+        try:
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_assigned_worker_id ON jobs (assigned_worker_id)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_assigned_worker_status ON jobs (assigned_worker_id, status)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_status_created_at ON jobs (status, created_at)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_workers_status_last_heartbeat ON workers (connection_status, last_heartbeat)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_job_events_created_at ON job_events (created_at)"))
+        except Exception as e:
+            logger.debug("Database index ensure skipped: %s", str(e))
     logger.info("Database schemas initialized successfully.")
 
 
