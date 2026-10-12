@@ -5,6 +5,7 @@
     "dockerfilePath": "infra/docker/Dockerfile.dashboard"
   },
   "deploy": {
+    "startCommand": "pnpm --filter @websync/dashboard start -- -H 0.0.0.0 -p ${PORT:-3000}",
     "healthcheckPath": "/",
     "healthcheckTimeout": 100,
     "restartPolicyType": "ON_FAILURE",

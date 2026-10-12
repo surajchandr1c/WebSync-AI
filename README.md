@@ -79,102 +79,123 @@ WebSync_AI/
 
 ## Quickstart Guide
 
-### 1. Environment Setup
+This quickstart uses **Windows PowerShell** and assumes commands are run from the repository root. Use Python 3.12 or newer, Node.js, and pnpm. The local-development database defaults to SQLite (`coordinator.db`); PostgreSQL, Redis, Docker, and a separate database server are not required for this setup.
 
-Copy the example configuration file:
-```bash
-cp .env.example .env
+### 1. Install dependencies
+
+Install JavaScript workspace dependencies from the committed lockfile:
+
+```powershell
+pnpm install --frozen-lockfile
 ```
 
-### 2. Python Dependencies
+Create a project-local Python environment if `.venv` does not already exist, then activate it:
 
-Activate your virtual environment and install dependencies:
-```bash
-# On Windows:
-.venv\Scripts\activate
-
-# On Linux/macOS:
-source .venv/bin/activate
-
-pip install fastapi "uvicorn[standard]" pydantic pydantic-settings httpx sqlalchemy "sqlalchemy[asyncio]" alembic aiosqlite pyjwt bcrypt email-validator psutil pytest pytest-asyncio
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 ```
 
-### 3. Database Migrations
+If `.venv` already exists, skip the creation command and activate it. Install the dependencies declared by the coordinator and worker projects, including their test extras:
 
-Run Alembic migrations to initialize the SQLite or PostgreSQL database:
-```bash
-# On Windows:
-$env:PYTHONPATH="services/coordinator/src"; alembic -c services/coordinator/alembic.ini upgrade head
-
-# On Linux/macOS:
-PYTHONPATH="services/coordinator/src" alembic -c services/coordinator/alembic.ini upgrade head
+```powershell
+python -m pip install --upgrade pip
+python -m pip install "fastapi>=0.115.0" "uvicorn[standard]>=0.30.0" "pydantic>=2.8.0" "pydantic-settings>=2.4.0" "httpx>=0.27.0" "sqlalchemy>=2.0.0" "alembic>=1.13.0" "aiosqlite>=0.20.0" "pyjwt>=2.8.0" "bcrypt>=4.1.0" "psutil>=6.0.0" "websockets>=12.0.0" "pytest>=8.0.0" "pytest-asyncio>=0.23.0" "pytest-timeout>=2.3.0"
 ```
 
-### 4. Run Backend Coordinator
+NVIDIA GPU telemetry support is optional. To install its additional driver binding:
 
-Start the FastAPI coordinator:
-```bash
-# On Windows:
-$env:PYTHONPATH="services/coordinator/src"; python services/coordinator/src/coordinator/main.py
-
-# On Linux/macOS:
-PYTHONPATH="services/coordinator/src" python services/coordinator/src/coordinator/main.py
+```powershell
+python -m pip install "nvidia-ml-py>=12.0.0"
 ```
 
-- **Interactive Swagger Docs**: `http://localhost:8000/docs`
-- **Health Check**: `http://localhost:8000/api/v1/health`
-- **Real-Time WebSockets**: `ws://localhost:8000/ws/dashboard`
+### 2. Prepare local environment files
 
-### 5. Run Worker Agent (Phase 3)
+Keep any existing local configuration. Only copy the examples if the destination files do not already exist:
 
-The cross-platform Python worker agent collects real system metrics via `psutil`, dynamically detects NVIDIA GPUs via NVML (`nvidia-ml-py`), registers with the coordinator, and executes sandboxed computational workloads.
-
-#### Inspect Local Machine Telemetry (Standalone)
-Inspect genuine system hardware, CPU cores, RAM, and GPU detection without connecting to the coordinator:
-```bash
-python worker/agent/main.py --inspect
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+if (-not (Test-Path apps\dashboard\.env.local)) { Copy-Item apps\dashboard\.env.example apps\dashboard\.env.local }
 ```
 
-#### Single Heartbeat Verification Mode
-Perform a one-time registration, send one live telemetry heartbeat, and cleanly disconnect:
-```bash
-python worker/agent/main.py --coordinator-url http://localhost:8000 --once
+The root `.env` configures the coordinator and worker, including the local SQLite URL and development worker credentials. The dashboard reads its coordinator and dashboard WebSocket URLs from `apps\dashboard\.env.local`. Never use the example development credentials in production.
+
+### 3. Initialize/update the database schema
+
+Run the checked-in Alembic migrations once before starting the services:
+
+```powershell
+python -m alembic -c services\coordinator\alembic.ini upgrade head
 ```
 
-#### Run Worker Agent as Background Daemon
-Connect to the coordinator and begin periodic telemetry heartbeats (default every 10s):
-```bash
-# On Windows:
-$env:PYTHONPATH="worker;.env"; python worker/agent/main.py
+With the default `.env`, this applies migrations to the local SQLite database. The coordinator also creates missing tables at startup, but applying Alembic migrations is the project’s explicit schema-upgrade command. Do not delete or reset an existing database to start the app.
 
-# On Linux/macOS:
-PYTHONPATH="worker" python worker/agent/main.py
+### 4. Start the coordinator, dashboard, and worker
+
+Run each command in a **separate VS Code integrated terminal**, with the working directory set to the repository root. Keep all three terminals open.
+
+**Terminal 1 — coordinator**
+
+```powershell
+$env:PYTHONPATH = "services\coordinator\src"
+python -m uvicorn coordinator.main:app --host 0.0.0.0 --port 8000
 ```
 
-CLI options supported:
-- `--inspect`: Inspect genuine hardware specs, RAM, CPU cores, and GPU availability, then exit.
-- `--once`: Enroll, dispatch a single real telemetry heartbeat to verify connectivity, and disconnect cleanly.
-- `--coordinator-url <url>`: Override coordinator endpoint (defaults to `WEB_SYNC_COORDINATOR_URL`).
-- `--worker-id <id>`: Override worker node ID (defaults to `WEB_SYNC_WORKER_ID`).
-- `--worker-name <name>`: Override node display name (defaults to hostname).
+The coordinator listens on port `8000`. `0.0.0.0` allows other machines on a permitted network interface to connect; restrict access with your firewall and do not expose the development HTTP service to the public internet.
 
-### 6. Run Automated Tests
+- API documentation: `http://localhost:8000/docs`
+- Health check: `http://localhost:8000/api/v1/health`
+- Dashboard WebSocket: `ws://localhost:8000/ws/dashboard`
+- Worker WebSocket: `ws://localhost:8000/ws/worker`
 
-Execute the complete test suite (58 tests across coordinator scheduler, dispatch, workers, and executor):
-```bash
-# On Windows:
-$env:PYTHONPATH="services/coordinator/src;worker"; pytest services/coordinator/tests worker/tests -v
+**Terminal 2 — dashboard**
 
-# On Linux/macOS:
-PYTHONPATH="services/coordinator/src:worker" pytest services/coordinator/tests worker/tests -v
+```powershell
+pnpm dev:dashboard
 ```
 
-### 7. Run the Web Dashboard
+Open `http://localhost:3000`.
 
-```bash
-npx pnpm --filter @websync/dashboard dev
+**Terminal 3 — local worker**
+
+```powershell
+python worker\agent\main.py
 ```
-Open `http://localhost:3000` to interact with the dashboard.
+
+The worker reads `WEB_SYNC_COORDINATOR_URL`, `WEB_SYNC_WORKER_ID`, and `WEB_SYNC_WORKER_TOKEN` from the root `.env` (or uses the configured development defaults). Its default coordinator URL is `http://localhost:8000`.
+
+Optional worker checks:
+
+```powershell
+python worker\agent\main.py --inspect
+python worker\agent\main.py --coordinator-url http://localhost:8000 --once
+```
+
+For a worker on another computer, set `WEB_SYNC_COORDINATOR_URL` to the coordinator computer’s reachable LAN IP (for example, `http://192.168.1.50:8000`) and give it a unique worker ID. Permit TCP port 8000 only on a trusted private network. Use HTTPS/WSS or a secured VPN for remote networks; do not expose this development HTTP endpoint publicly.
+
+### 5. Run automated checks
+
+From the repository root, with the Python environment activated:
+
+```powershell
+$env:PYTHONPATH = "services\coordinator\src;worker"
+python -m pytest services\coordinator\tests worker\tests -v
+pnpm type-check
+pnpm --filter @websync/dashboard build
+```
+
+The dashboard `lint` script currently runs `next lint`, which may prompt to create an ESLint configuration if one is not present.
+
+### 6. Build or run the Tauri desktop app (optional)
+
+Tauri requires Rust/Cargo, WebView2, and Visual Studio C++ Build Tools with a Windows SDK. From the repository root:
+
+```powershell
+pnpm --filter @websync/desktop exec tauri dev
+pnpm --filter @websync/desktop exec tauri build
+```
+
+The Tauri configuration starts its Vite frontend on port `1420`. Run one Tauri command at a time; it manages the frontend process itself.
 
 ---
 

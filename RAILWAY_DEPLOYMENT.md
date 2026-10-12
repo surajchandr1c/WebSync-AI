@@ -95,6 +95,7 @@ git push origin main
    - **Networking:**
      - Click **"Generate Domain"** under Public Networking (e.g. `websync-coordinator-production.up.railway.app`).
    - **Deploy:**
+     - **Custom Start Command:** Leave empty (automatically handled by `railway.json` as `uvicorn coordinator.main:app --host 0.0.0.0 --port ${PORT:-8000}`).
      - **Healthcheck Path:** `/health`
      - **Healthcheck Timeout:** `100` seconds
      - **Restart Policy:** `On Failure` (5 retries)
@@ -130,6 +131,7 @@ git push origin main
    - **Networking:**
      - Click **"Generate Domain"** (e.g. `websync-dashboard-production.up.railway.app`).
    - **Deploy:**
+     - **Custom Start Command:** Leave empty (automatically handled by `apps/dashboard/railway.json` and `Dockerfile.dashboard`).
      - **Healthcheck Path:** `/`
      - **Healthcheck Timeout:** `100` seconds
 4. Go to **Variables** and configure:
