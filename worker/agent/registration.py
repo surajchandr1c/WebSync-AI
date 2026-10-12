@@ -39,6 +39,7 @@ class RegistrationManager:
             "total_ram_bytes": specs["total_ram_bytes"],
             "available_ram_bytes": metrics["available_ram_bytes"],
             "supported_workloads": specs["supported_workloads"],
+            "supported_models": specs.get("supported_models", []),
             "gpu_available": specs["gpu_available"],
             "gpu_metadata": specs["gpu_metadata"],
         }

@@ -96,6 +96,19 @@ class WorkerSettings(BaseSettings):
         description="Verify coordinator TLS certificates when connecting via HTTPS/WSS",
     )
 
+    # Ollama / Local AI Inference
+    WEB_SYNC_OLLAMA_URL: str = Field(
+        default="http://localhost:11434",
+        validation_alias=AliasChoices("WEB_SYNC_OLLAMA_URL", "OLLAMA_URL"),
+        description="Local Ollama inference API endpoint",
+    )
+    OLLAMA_TIMEOUT_SECONDS: float = Field(
+        default=300.0,
+        ge=5.0,
+        validation_alias=AliasChoices("OLLAMA_TIMEOUT_SECONDS", "WEB_SYNC_OLLAMA_TIMEOUT"),
+        description="Maximum execution timeout for local AI model inference in seconds",
+    )
+
     # Networking & Timeouts
     WEB_SYNC_CONNECT_TIMEOUT_SECONDS: float = Field(
         default=10.0,

@@ -20,11 +20,18 @@ def evaluate_worker_eligibility(
     if worker.is_revoked:
         return False, "Worker is revoked or administratively disabled"
 
-    # 2. Connection status check
+    # 2. Target worker constraint
+    reqs = job.requirements or {}
+    payload = job.input_payload or {}
+    target_worker_id = reqs.get("target_worker_id") or payload.get("target_worker_id")
+    if target_worker_id and worker.worker_id != target_worker_id:
+        return False, f"Job targeted worker '{target_worker_id}', but candidate worker is '{worker.worker_id}'"
+
+    # 3. Connection status check
     if worker.connection_status not in ("online", "busy"):
         return False, f"Worker connection status is '{worker.connection_status}' (expected online/busy)"
 
-    # 3. Heartbeat freshness
+    # 4. Heartbeat freshness
     if not worker.last_heartbeat:
         return False, "Worker has never sent a heartbeat"
 
@@ -36,7 +43,7 @@ def evaluate_worker_eligibility(
     if elapsed > heartbeat_timeout_seconds:
         return False, f"Worker heartbeat is stale ({elapsed:.1f}s ago > {heartbeat_timeout_seconds:.1f}s threshold)"
 
-    # 4. Telemetry data sanity checks (prevent NaN or distorted metrics)
+    # 5. Telemetry data sanity checks (prevent NaN or distorted metrics)
     if (
         math.isnan(worker.cpu_utilization)
         or math.isinf(worker.cpu_utilization)
@@ -51,12 +58,27 @@ def evaluate_worker_eligibility(
     if worker.available_ram_bytes < 0 or worker.available_ram_bytes > worker.total_ram_bytes:
         return False, f"Worker reported invalid available RAM: {worker.available_ram_bytes} bytes (total: {worker.total_ram_bytes})"
 
-    # 5. Workload type support
+    # 6. Workload type support
     supported = worker.supported_workloads or []
     if job.job_type not in supported:
         return False, f"Workload '{job.job_type}' not in worker supported workloads: {supported}"
 
-    # 6. Memory requirement matching
+    # 7. LLM prompt model matching
+    if job.job_type == "llm_prompt":
+        req_model = reqs.get("model") or payload.get("model")
+        if req_model:
+            worker_models = worker.supported_models or []
+            model_match = any(
+                req_model == m or req_model == m.split(":")[0] or m == req_model.split(":")[0]
+                for m in worker_models
+            )
+            if not model_match:
+                return (
+                    False,
+                    f"Requested model '{req_model}' not available on worker (available: {worker_models})",
+                )
+
+    # 8. Memory requirement matching
     reqs = job.requirements or {}
     if "min_ram_bytes" in reqs and reqs["min_ram_bytes"] is not None:
         required_ram = int(reqs["min_ram_bytes"])
@@ -73,7 +95,7 @@ def evaluate_worker_eligibility(
             f"Insufficient available RAM: {avail_mb:.1f} MB available < {req_mb:.1f} MB required",
         )
 
-    # 7. GPU requirement matching
+    # 9. GPU requirement matching
     gpu_required = bool(reqs.get("gpu_required", False))
     if gpu_required:
         if not worker.gpu_available:
@@ -81,12 +103,17 @@ def evaluate_worker_eligibility(
         if not worker.gpu_metadata:
             return False, "Workload requires GPU but worker reported no valid GPU devices"
 
-    # 8. Concurrency capacity check
+    # 10. Concurrency capacity check
+    active_jobs = getattr(worker, "active_job_count", 0)
+    if active_jobs is None:
+        active_jobs = 0
     max_jobs = getattr(worker, "max_concurrent_jobs", 2)
-    if worker.active_job_count >= max_jobs:
+    if max_jobs is None:
+        max_jobs = 2
+    if active_jobs >= max_jobs:
         return (
             False,
-            f"Worker at concurrency limit: {worker.active_job_count}/{max_jobs} active jobs",
+            f"Worker at concurrency limit: {active_jobs}/{max_jobs} active jobs",
         )
 
     return True, None

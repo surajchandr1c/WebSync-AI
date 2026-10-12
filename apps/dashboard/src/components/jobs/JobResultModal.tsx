@@ -1,12 +1,25 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { useCluster } from '@/context/ClusterContext';
 import { JobResponse, JobResultResponse, JobEventResponse } from '@websync/shared-types';
-import { CheckCircle2, XCircle, Clock, Cpu, Server, Terminal, ShieldAlert } from 'lucide-react';
+import {
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Cpu,
+  Server,
+  Terminal,
+  ShieldAlert,
+  Bot,
+  Sparkles,
+  Copy,
+  Check,
+  AlertCircle,
+} from 'lucide-react';
 
 interface JobResultModalProps {
   job: JobResponse | null;
@@ -20,11 +33,13 @@ export function JobResultModal({ job, isOpen, onClose }: JobResultModalProps) {
   const [events, setEvents] = useState<JobEventResponse[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [cancelling, setCancelling] = useState<boolean>(false);
+  const [copied, setCopied] = useState<boolean>(false);
 
   useEffect(() => {
     if (!isOpen || !job) {
       setResult(null);
       setEvents([]);
+      setCopied(false);
       return;
     }
 
@@ -62,6 +77,27 @@ export function JobResultModal({ job, isOpen, onClose }: JobResultModalProps) {
     };
   }, [isOpen, job, client]);
 
+  // Parse structured AI output if present
+  const aiOutput = useMemo(() => {
+    if (!result?.result_output) return null;
+    try {
+      const parsed = JSON.parse(result.result_output);
+      if (parsed && typeof parsed === 'object' && ('response' in parsed || 'model' in parsed)) {
+        return parsed as {
+          model?: string;
+          response?: string;
+          eval_count?: number;
+          eval_duration_ms?: number;
+          total_duration_ms?: number;
+          done?: boolean;
+        };
+      }
+    } catch {
+      // not JSON
+    }
+    return null;
+  }, [result?.result_output]);
+
   if (!job) return null;
 
   const handleCancelJob = async () => {
@@ -74,6 +110,18 @@ export function JobResultModal({ job, isOpen, onClose }: JobResultModalProps) {
       alert(err instanceof Error ? err.message : 'Failed to cancel job');
     } finally {
       setCancelling(false);
+    }
+  };
+
+  const handleCopyAiResponse = async () => {
+    const textToCopy = aiOutput?.response || result?.result_output || '';
+    if (!textToCopy) return;
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy to clipboard', err);
     }
   };
 
@@ -106,6 +154,11 @@ export function JobResultModal({ job, isOpen, onClose }: JobResultModalProps) {
       title={
         <div className="flex items-center justify-between w-full pr-8">
           <div className="flex items-center space-x-2">
+            {job.job_type === 'llm_prompt' ? (
+              <Bot className="w-5 h-5 text-indigo-400" />
+            ) : (
+              <Cpu className="w-5 h-5 text-blue-400" />
+            )}
             <span className="font-semibold text-white">{job.name}</span>
             {getStatusBadge(job.status)}
           </div>
@@ -167,13 +220,107 @@ export function JobResultModal({ job, isOpen, onClose }: JobResultModalProps) {
           </div>
         )}
 
+        {/* Dedicated Remote AI Output Card */}
+        {(job.job_type === 'llm_prompt' || aiOutput) && (
+          <div className="rounded-lg border border-indigo-900/50 bg-[#0c1222] p-4 space-y-3">
+            <div className="flex items-center justify-between border-b border-[#1f2937] pb-2.5">
+              <div className="flex items-center space-x-2 text-indigo-300 font-semibold text-xs">
+                <Bot className="w-4 h-4 text-indigo-400" />
+                <span>Remote AI Inference Outcome</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <span className="text-[11px] font-mono bg-indigo-950/60 text-indigo-300 px-2.5 py-0.5 rounded border border-indigo-800/50">
+                  {aiOutput?.model || (job.input_payload as any)?.model || 'Model'}
+                </span>
+                {aiOutput?.eval_count != null && (
+                  <span className="text-[11px] font-mono text-emerald-400 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-900/40">
+                    {aiOutput.eval_count} tokens
+                  </span>
+                )}
+                {aiOutput?.total_duration_ms != null && (
+                  <span className="text-[11px] font-mono text-gray-300 bg-gray-800/40 px-2 py-0.5 rounded border border-gray-700/40">
+                    {(aiOutput.total_duration_ms / 1000).toFixed(2)}s
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Prompt Submitted */}
+            {(job.input_payload as any)?.prompt && (
+              <div className="space-y-1">
+                <span className="text-[11px] uppercase font-semibold text-gray-400 tracking-wider">
+                  Prompt Submitted
+                </span>
+                <div className="bg-[#080d1a] border border-[#1a2333] rounded p-2.5 text-xs text-gray-200 leading-relaxed font-sans">
+                  {(job.input_payload as any).prompt}
+                </div>
+              </div>
+            )}
+
+            {/* AI Generated Response */}
+            {aiOutput?.response ? (
+              <div className="space-y-1.5 pt-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] uppercase font-semibold text-emerald-400 tracking-wider flex items-center space-x-1.5">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Generated AI Response</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCopyAiResponse}
+                    className="flex items-center space-x-1 text-[11px] text-gray-400 hover:text-white transition-colors bg-[#111827] px-2 py-1 rounded border border-[#1f2937]"
+                  >
+                    {copied ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span className="text-emerald-400">Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy Response</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                <div className="bg-[#080d1a] border border-emerald-900/40 rounded p-4 text-xs text-gray-100 font-sans leading-relaxed whitespace-pre-wrap select-text max-h-72 overflow-y-auto">
+                  {aiOutput.response}
+                </div>
+              </div>
+            ) : null}
+
+            {/* Error & Troubleshooting Guidance */}
+            {result?.result_error && (
+              <div className="p-3 bg-rose-950/20 border border-rose-900/40 rounded text-xs text-rose-300 space-y-1.5">
+                <div className="font-semibold flex items-center space-x-1.5 text-rose-400">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>Inference Error Details</span>
+                </div>
+                <p className="text-[11px] font-mono text-gray-300 whitespace-pre-wrap">
+                  {result.result_error}
+                </p>
+                {result.result_error.toLowerCase().includes('ollama') && (
+                  <div className="p-2 bg-amber-950/30 border border-amber-900/40 rounded text-[11px] text-amber-200 space-y-1">
+                    <div className="font-semibold">Troubleshooting Steps:</div>
+                    <ul className="list-disc list-inside space-y-0.5 text-amber-300/90">
+                      <li>Make sure Ollama is installed on the worker PC (https://ollama.com).</li>
+                      <li>Run <code className="bg-black/40 px-1 py-0.5 rounded font-mono">ollama serve</code> to start the local inference server.</li>
+                      <li>Pull the model with <code className="bg-black/40 px-1 py-0.5 rounded font-mono">ollama pull {(job.input_payload as any)?.model || 'llama3.2:latest'}</code>.</li>
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Execution Output / Terminal View */}
         {(result?.result_output || result?.result_error || job.status === 'COMPLETED' || job.status === 'FAILED') && (
           <div className="space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="font-semibold text-gray-300 flex items-center space-x-1.5">
                 <Terminal className="w-4 h-4 text-blue-400" />
-                <span>Execution Logs & Result Payload</span>
+                <span>Execution Logs & Raw Result Payload</span>
               </span>
               <span className="font-mono text-gray-400">
                 Exit Code: {result?.result_exit_code ?? '—'}

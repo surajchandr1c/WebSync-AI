@@ -274,7 +274,9 @@ class WorkerWebSocketClient:
             logger.debug("Pre-flight host telemetry check skipped: %s", str(e))
 
         # 4. Verify workload compatibility
-        if job_type not in self.supported_workloads:
+        from worker.agent.capabilities import get_supported_workloads
+        current_workloads = get_supported_workloads()
+        if job_type not in self.supported_workloads and job_type not in current_workloads:
             rejection_reason = f"Workload '{job_type}' not supported on this node."
             logger.warning("Rejecting job '%s': %s", job_id, rejection_reason)
             await self.send_envelope(

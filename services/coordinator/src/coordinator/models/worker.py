@@ -23,6 +23,7 @@ class Worker(Base):
 
     # Capabilities
     supported_workloads: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=False)
+    supported_models: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=False)
     gpu_available: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     gpu_metadata: Mapped[List[Dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
 

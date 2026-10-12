@@ -48,8 +48,10 @@ class WorkerDispatcher:
 
         try:
             # 1. Verify workload type compatibility
-            if job_type not in self.supported_workloads:
-                reason = f"Workload '{job_type}' not supported on this node (supported: {self.supported_workloads})"
+            from worker.agent.capabilities import get_supported_workloads
+            current_workloads = get_supported_workloads()
+            if job_type not in self.supported_workloads and job_type not in current_workloads:
+                reason = f"Workload '{job_type}' not supported on this node (supported: {list(set(self.supported_workloads + current_workloads))})"
                 logger.warning("Rejecting job '%s': %s", job_id, reason)
                 await self.transport.ack_job(
                     worker_id=self.worker_id,

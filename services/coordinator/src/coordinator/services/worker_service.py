@@ -49,6 +49,7 @@ def worker_to_response(worker: Worker) -> WorkerResponse:
         total_ram_bytes=worker.total_ram_bytes,
         available_ram_bytes=worker.available_ram_bytes,
         supported_workloads=worker.supported_workloads,
+        supported_models=worker.supported_models or [],
         gpu_available=worker.gpu_available,
         gpu_metadata=worker.gpu_metadata,
         active_job_count=worker.active_job_count,
@@ -92,6 +93,7 @@ class WorkerService:
             total_ram_bytes=payload.total_ram_bytes,
             available_ram_bytes=payload.available_ram_bytes,
             supported_workloads=payload.supported_workloads,
+            supported_models=payload.supported_models or [],
             gpu_available=payload.gpu_available,
             gpu_metadata=payload.gpu_metadata,
             active_job_count=0,
@@ -155,6 +157,8 @@ class WorkerService:
         if payload.gpu_metadata is not None:
             worker.gpu_metadata = payload.gpu_metadata
             worker.gpu_available = len(payload.gpu_metadata) > 0
+        if payload.supported_models is not None:
+            worker.supported_models = payload.supported_models
 
         worker.last_heartbeat = now
         worker.connection_status = "busy" if payload.active_job_count > 0 else "online"

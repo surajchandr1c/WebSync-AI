@@ -21,6 +21,10 @@ class WorkerRegistrationRequest(BaseModel):
         default=["matrix_multiply", "data_processing", "image_processing"],
         description="List of supported workload identifiers",
     )
+    supported_models: List[str] = Field(
+        default_factory=list,
+        description="List of local LLM models advertised by worker (e.g. from Ollama)",
+    )
     gpu_available: bool = Field(default=False, description="Whether supported GPU hardware is present")
     gpu_metadata: List[Dict[str, Any]] = Field(default_factory=list, description="GPU hardware details")
     max_concurrent_jobs: int = Field(default=2, ge=1, le=64, description="Maximum concurrent tasks this node can execute")
@@ -50,6 +54,7 @@ class WorkerHeartbeatRequest(BaseModel):
     total_ram_bytes: Optional[int] = Field(None, ge=0, description="Updated total physical memory if changed")
     active_job_count: int = Field(default=0, ge=0, description="Currently executing job count")
     gpu_metadata: Optional[List[Dict[str, Any]]] = Field(None, description="Optional GPU telemetry samples")
+    supported_models: Optional[List[str]] = Field(None, description="Optional updated list of local LLM models")
 
 
 class WorkerResponse(BaseModel):
@@ -62,6 +67,7 @@ class WorkerResponse(BaseModel):
     total_ram_bytes: int
     available_ram_bytes: int
     supported_workloads: List[str]
+    supported_models: List[str] = Field(default_factory=list)
     gpu_available: bool
     gpu_metadata: List[Dict[str, Any]]
     active_job_count: int

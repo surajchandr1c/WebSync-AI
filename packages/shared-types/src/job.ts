@@ -1,6 +1,6 @@
 export type JobStatus = 'QUEUED' | 'SCHEDULED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 
-export type ApprovedJobType = 'matrix_multiply' | 'data_processing' | 'image_processing';
+export type ApprovedJobType = 'matrix_multiply' | 'data_processing' | 'image_processing' | 'llm_prompt';
 
 export interface JobRequirements {
   min_cpu_cores: number;
@@ -8,6 +8,8 @@ export interface JobRequirements {
   min_ram_bytes?: number;
   gpu_required: boolean;
   timeout_seconds?: number;
+  target_worker_id?: string;
+  model?: string;
 }
 
 export interface JobCreateRequest {

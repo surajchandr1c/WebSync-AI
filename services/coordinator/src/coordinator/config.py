@@ -36,6 +36,8 @@ class CoordinatorSettings(BaseSettings):
     MAX_QUEUED_JOBS: int = 1000
     MAX_JOB_INPUT_BYTES: int = 2 * 1024 * 1024  # 2MB
     MAX_WS_MESSAGE_SIZE_BYTES: int = 2 * 1024 * 1024  # 2MB
+    MAX_LLM_PROMPT_CHARS: int = 32768
+    MAX_LLM_SYSTEM_CHARS: int = 8192
 
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = True

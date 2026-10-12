@@ -12,6 +12,7 @@ export interface WorkerResponse {
   total_ram_bytes: number;
   available_ram_bytes: number;
   supported_workloads: string[];
+  supported_models?: string[];
   gpu_available: boolean;
   gpu_metadata: GPUInfo[];
   active_job_count: number;
@@ -39,6 +40,7 @@ export interface WorkerRegistrationPayload {
   total_ram_bytes: number;
   available_ram_bytes: number;
   supported_workloads?: string[];
+  supported_models?: string[];
   gpu_available?: boolean;
   gpu_metadata?: GPUInfo[];
   max_concurrent_jobs?: number;

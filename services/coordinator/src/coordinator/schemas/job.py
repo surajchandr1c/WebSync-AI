@@ -4,10 +4,14 @@ from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field, field_validator
 
 
+import re
+from coordinator.config import settings
+
 class ApprovedJobType(str, Enum):
     MATRIX_MULTIPLY = "matrix_multiply"
     DATA_PROCESSING = "data_processing"
     IMAGE_PROCESSING = "image_processing"
+    LLM_PROMPT = "llm_prompt"
 
 
 class JobState(str, Enum):
@@ -36,6 +40,8 @@ class JobRequirements(BaseModel):
     min_ram_bytes: Optional[int] = Field(None, ge=0, description="Minimum RAM in exact bytes (overrides min_ram_mb if specified)")
     gpu_required: bool = Field(default=False, description="Whether workload requires GPU hardware")
     timeout_seconds: int = Field(default=300, ge=1, le=3600, description="Maximum execution timeout in seconds (capped at 3600s)")
+    target_worker_id: Optional[str] = Field(None, max_length=128, description="Target specific worker node for execution")
+    model: Optional[str] = Field(None, max_length=128, description="Target AI model required on worker")
 
     def get_min_ram_bytes(self) -> int:
         if self.min_ram_bytes is not None:
@@ -45,7 +51,7 @@ class JobRequirements(BaseModel):
 
 class JobCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=128, description="Descriptive job name")
-    job_type: str = Field(..., description="Approved job type (matrix_multiply, data_processing, image_processing)")
+    job_type: str = Field(..., description="Approved job type (matrix_multiply, data_processing, image_processing, llm_prompt)")
     input_payload: Dict[str, Any] = Field(..., description="Job execution input parameters")
     requirements: Optional[JobRequirements] = Field(default_factory=JobRequirements)
 
@@ -59,7 +65,7 @@ class JobCreateRequest(BaseModel):
 
     @field_validator("input_payload")
     @classmethod
-    def validate_input_payload(cls, v: Dict[str, Any]) -> Dict[str, Any]:
+    def validate_input_payload(cls, v: Dict[str, Any], info) -> Dict[str, Any]:
         if not v:
             raise ValueError("input_payload must not be empty.")
         import json
@@ -69,6 +75,37 @@ class JobCreateRequest(BaseModel):
             raise ValueError(f"input_payload must be JSON-serializable: {str(e)}")
         if payload_bytes > 2 * 1024 * 1024:
             raise ValueError(f"input_payload exceeds maximum size limit of 2MB ({payload_bytes} bytes).")
+
+        # Specific validation for llm_prompt
+        job_type = info.data.get("job_type")
+        if job_type == ApprovedJobType.LLM_PROMPT.value:
+            prompt = v.get("prompt")
+            if not prompt or not isinstance(prompt, str) or not prompt.strip():
+                raise ValueError("input_payload for 'llm_prompt' must contain a non-empty 'prompt' string.")
+            max_prompt = getattr(settings, "MAX_LLM_PROMPT_CHARS", 32768)
+            if len(prompt) > max_prompt:
+                raise ValueError(f"Prompt length ({len(prompt)} chars) exceeds maximum limit of {max_prompt} characters.")
+
+            model = v.get("model")
+            if not model or not isinstance(model, str) or not model.strip():
+                raise ValueError("input_payload for 'llm_prompt' must specify a valid 'model' identifier.")
+            # Sanitize model name: letters, digits, '.', ':', '-', '_', '/'
+            if not re.match(r"^[a-zA-Z0-9_\-\.:/]+$", model.strip()):
+                raise ValueError(f"Invalid model identifier '{model}'. Model names must contain only alphanumeric, colon, dash, underscore, and dot characters.")
+
+            if "system" in v and v["system"] is not None:
+                system_text = v["system"]
+                if not isinstance(system_text, str):
+                    raise ValueError("'system' prompt must be a string if provided.")
+                max_sys = getattr(settings, "MAX_LLM_SYSTEM_CHARS", 8192)
+                if len(system_text) > max_sys:
+                    raise ValueError(f"System prompt length exceeds maximum limit of {max_sys} characters.")
+
+            if "temperature" in v and v["temperature"] is not None:
+                temp = v["temperature"]
+                if not isinstance(temp, (int, float)) or temp < 0.0 or temp > 2.0:
+                    raise ValueError("Temperature must be a number between 0.0 and 2.0.")
+
         return v
 
 

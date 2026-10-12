@@ -2,7 +2,7 @@ import abc
 import importlib.util
 import logging
 import platform
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 logger = logging.getLogger("websync-worker.capabilities")
 
@@ -139,6 +139,61 @@ def get_gpu_provider() -> BaseGPUProvider:
 
 
 # Workload capability inspection
+_cached_ollama_time: float = 0.0
+_cached_ollama_result: Tuple[bool, List[str]] = (False, [])
+
+
+def detect_ollama_models(
+    ollama_url: Optional[str] = None,
+    timeout: float = 1.0,
+    force_refresh: bool = False,
+) -> Tuple[bool, List[str]]:
+    """Check if local Ollama API is reachable and retrieve available models.
+
+    Returns:
+        (is_available, list_of_model_names)
+    """
+    global _cached_ollama_time, _cached_ollama_result
+    import time
+
+    now = time.time()
+    if not force_refresh and (now - _cached_ollama_time) < 15.0:
+        return _cached_ollama_result
+
+    if ollama_url is None:
+        try:
+            from worker.agent.config import settings
+            ollama_url = getattr(settings, "WEB_SYNC_OLLAMA_URL", "http://localhost:11434")
+        except Exception:
+            ollama_url = "http://localhost:11434"
+
+    ollama_url = ollama_url.rstrip("/")
+    tags_url = f"{ollama_url}/api/tags"
+
+    try:
+        import httpx
+
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.get(tags_url)
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_models = data.get("models", [])
+                models = []
+                for item in raw_models:
+                    name = item.get("name") or item.get("model")
+                    if name and isinstance(name, str):
+                        models.append(name)
+                _cached_ollama_time = now
+                _cached_ollama_result = (True, models)
+                return True, models
+    except Exception as e:
+        logger.debug("Ollama is not reachable at %s: %s", tags_url, str(e))
+
+    _cached_ollama_time = now
+    _cached_ollama_result = (False, [])
+    return False, []
+
+
 def get_supported_workloads() -> List[str]:
     """Inspect local environment to return only workloads the node can execute."""
     supported = ["matrix_multiply", "data_processing"]
@@ -146,5 +201,10 @@ def get_supported_workloads() -> List[str]:
     # Check if PIL (Pillow) is available for image_processing
     if importlib.util.find_spec("PIL") is not None:
         supported.append("image_processing")
+
+    # Check if Ollama is reachable for llm_prompt workload
+    is_ollama_ok, _ = detect_ollama_models(timeout=0.5)
+    if is_ollama_ok:
+        supported.append("llm_prompt")
 
     return supported

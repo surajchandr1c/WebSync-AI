@@ -235,10 +235,18 @@ WebSync AI features 6 real-time, desktop-first dark-mode views connecting direct
 
 1. **Overview (`/`)**: Cluster compute pool status, connected node count, active workloads in-flight, pooled RAM gauge, CPU average, and recent workloads preview.
 2. **Workers (`/workers`)**: Real-time worker cards with OS platforms (Windows, Linux, macOS), authentic `psutil` CPU/RAM meters, detected GPU hardware, concurrency slots, search, status filter, and node enrollment instructions.
-3. **Jobs (`/jobs`)**: Distributed workload table with state badges (`QUEUED`, `SCHEDULED`, `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED`), workload submission modal, cancellation actions, and result inspection.
+3. **Jobs (`/jobs`)**: Distributed workload table with state badges (`QUEUED`, `SCHEDULED`, `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED`), workload submission modal (including **Remote AI Prompt Execution** with Ollama), cancellation actions, and result inspection.
 4. **Resource Monitor (`/monitor`)**: Time-series CPU load trend chart, pooled memory gauge, detected GPU accelerator inventory, and a worker heartbeat freshness table.
 5. **Activity Logs (`/logs`)**: Chronological audit trail stream with event type filters (`CREATED`, `SCHEDULED`, `STARTED`, `COMPLETED`, `FAILED`, `CANCELLED`), timestamp inspection, and JSON details viewer.
 6. **Settings (`/settings`)**: Coordinator endpoint configurator with live ping latency test, system runtime metadata, and worker startup commands.
+
+---
+
+## Remote AI Prompt Execution with Ollama
+
+WebSync AI enables operators to submit natural language prompts from the dashboard, dispatch them via the coordinator's adaptive scheduler to online worker PCs running [Ollama](https://ollama.com), execute them using local open-weight models (e.g. `llama3.2:latest`, `mistral:latest`), and stream structured results back in real time.
+
+For full setup instructions and architecture details, see the guide in [`docs/remote_ai_execution.md`](docs/remote_ai_execution.md).
 
 ---
 

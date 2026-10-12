@@ -15,6 +15,7 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_temp_db}"
 os.environ["COORDINATOR_SECRET_KEY"] = "test-secret-key-that-is-at-least-32-chars-long"
 os.environ["WORKER_DEV_AUTH_TOKEN"] = "test-dev-worker-token"
 os.environ["WORKER_HEARTBEAT_TIMEOUT_SECONDS"] = "2"
+os.environ["WORKER_MAX_CPU_PERCENT"] = "100.0"
 
 from coordinator.config import settings
 from coordinator.db.base import Base

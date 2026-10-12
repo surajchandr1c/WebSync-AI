@@ -2,7 +2,7 @@ import platform
 import time
 from typing import Dict, Any, Optional
 import psutil
-from worker.agent.capabilities import get_gpu_provider, get_supported_workloads
+from worker.agent.capabilities import get_gpu_provider, get_supported_workloads, detect_ollama_models
 
 WORKER_AGENT_VERSION = "0.3.0"
 
@@ -16,6 +16,7 @@ def get_static_hardware_specs() -> Dict[str, Any]:
     gpu_provider = get_gpu_provider()
     gpu_available = gpu_provider.is_available()
     gpu_devices = gpu_provider.get_static_devices() if gpu_available else []
+    _, models = detect_ollama_models()
 
     # Uptime in seconds
     uptime_seconds = None
@@ -40,6 +41,7 @@ def get_static_hardware_specs() -> Dict[str, Any]:
         "gpu_available": gpu_available,
         "gpu_metadata": gpu_devices,
         "supported_workloads": get_supported_workloads(),
+        "supported_models": models,
     }
 
 
@@ -67,6 +69,9 @@ def sample_system_metrics(active_jobs_count: int = 0) -> Dict[str, Any]:
     gpu_provider = get_gpu_provider()
     gpu_metrics = gpu_provider.sample_metrics() if gpu_provider.is_available() else []
 
+    # Local LLM models discovery
+    _, models = detect_ollama_models()
+
     return {
         "cpu_utilization": float(cpu_percent),
         "total_ram_bytes": int(mem.total),
@@ -75,4 +80,5 @@ def sample_system_metrics(active_jobs_count: int = 0) -> Dict[str, Any]:
         "disk_free_bytes": disk_free_bytes,
         "active_job_count": active_jobs_count,
         "gpu_metadata": gpu_metrics,
+        "supported_models": models,
     }

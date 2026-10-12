@@ -223,6 +223,7 @@ class ModularJobExecutor:
             "matrix_multiply": self._run_matrix_multiply,
             "data_processing": self._run_data_processing,
             "image_processing": self._run_image_processing,
+            "llm_prompt": self._run_llm_prompt,
         }
         if job_type not in handlers:
             raise ValueError(
@@ -231,6 +232,93 @@ class ModularJobExecutor:
         return handlers[job_type]
 
     # --- Safe Pure Handlers ---
+
+    @staticmethod
+    async def _run_llm_prompt(payload: Dict[str, Any]) -> str:
+        """Execute an authenticated LLM inference request via local Ollama API."""
+        prompt = payload.get("prompt")
+        if not prompt or not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("LLM workload requires a non-empty 'prompt' string")
+
+        model = payload.get("model")
+        if not model or not isinstance(model, str) or not model.strip():
+            raise ValueError("LLM workload requires a non-empty 'model' string identifier")
+
+        system_prompt = payload.get("system")
+        temperature = payload.get("temperature")
+
+        ollama_url = getattr(settings, "WEB_SYNC_OLLAMA_URL", "http://localhost:11434").rstrip("/")
+        timeout_seconds = getattr(settings, "OLLAMA_TIMEOUT_SECONDS", 300.0)
+
+        # Prepare Ollama /api/generate request
+        gen_url = f"{ollama_url}/api/generate"
+        req_body: Dict[str, Any] = {
+            "model": model.strip(),
+            "prompt": prompt.strip(),
+            "stream": False,
+        }
+        if system_prompt and isinstance(system_prompt, str) and system_prompt.strip():
+            req_body["system"] = system_prompt.strip()
+
+        options: Dict[str, Any] = {}
+        if temperature is not None:
+            try:
+                options["temperature"] = float(temperature)
+            except (ValueError, TypeError):
+                pass
+        if options:
+            req_body["options"] = options
+
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                response = await client.post(gen_url, json=req_body)
+
+                if response.status_code == 404:
+                    err_msg = ""
+                    try:
+                        err_msg = response.json().get("error", "")
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        f"Model '{model}' not found in local Ollama repository on this node. "
+                        f"To download it, run: 'ollama pull {model}'. (Details: {err_msg or response.text})"
+                    )
+
+                if response.status_code != 200:
+                    err_msg = ""
+                    try:
+                        err_msg = response.json().get("error", "")
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        f"Ollama API returned HTTP error {response.status_code}: {err_msg or response.text}"
+                    )
+
+                data = response.json()
+                generated_text = data.get("response", "")
+
+                output_payload = {
+                    "model": data.get("model", model),
+                    "response": generated_text,
+                    "eval_count": data.get("eval_count"),
+                    "eval_duration_ms": round(data.get("eval_duration", 0) / 1e6, 2) if data.get("eval_duration") else None,
+                    "prompt_eval_count": data.get("prompt_eval_count"),
+                    "total_duration_ms": round(data.get("total_duration", 0) / 1e6, 2) if data.get("total_duration") else None,
+                    "done": data.get("done", True),
+                }
+
+                return json.dumps(output_payload, indent=2)
+
+        except httpx.ConnectError as e:
+            raise RuntimeError(
+                f"Ollama inference engine is not reachable on this node at '{ollama_url}'. "
+                f"Please ensure Ollama is installed and running ('ollama serve'). (Error: {str(e)})"
+            ) from e
+        except httpx.TimeoutException as e:
+            raise TimeoutError(
+                f"Ollama inference timed out after {timeout_seconds}s for model '{model}'."
+            ) from e
 
     @staticmethod
     async def _run_matrix_multiply(payload: Dict[str, Any]) -> str:

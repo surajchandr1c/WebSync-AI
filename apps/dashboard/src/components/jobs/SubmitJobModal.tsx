@@ -1,12 +1,12 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { Input, Select } from '@/components/ui/Input';
 import { useCluster } from '@/context/ClusterContext';
 import { ApprovedJobType, JobCreateRequest } from '@websync/shared-types';
-import { PlaySquare, AlertCircle } from 'lucide-react';
+import { PlaySquare, AlertCircle, Bot, Sparkles, Server } from 'lucide-react';
 
 interface SubmitJobModalProps {
   isOpen: boolean;
@@ -14,8 +14,18 @@ interface SubmitJobModalProps {
   onSuccess?: () => void;
 }
 
+const COMMON_LLM_MODELS = [
+  'llama3.2:latest',
+  'llama3.2:3b',
+  'llama3.2:1b',
+  'llama3:latest',
+  'mistral:latest',
+  'phi3:latest',
+  'gemma2:latest',
+];
+
 export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalProps) {
-  const { client, refreshJobs, refreshEvents } = useCluster();
+  const { client, workers, refreshJobs, refreshEvents } = useCluster();
 
   const [jobType, setJobType] = useState<ApprovedJobType>('matrix_multiply');
   const [name, setName] = useState<string>('Matrix Multiplication Benchmark');
@@ -30,8 +40,38 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
   const [customJson, setCustomJson] = useState<string>('');
   const [useCustomJson, setUseCustomJson] = useState<boolean>(false);
 
+  // Remote AI Prompt (llm_prompt) inputs
+  const [targetWorkerId, setTargetWorkerId] = useState<string>('');
+  const [selectedModel, setSelectedModel] = useState<string>('llama3.2:latest');
+  const [customModel, setCustomModel] = useState<string>('');
+  const [promptText, setPromptText] = useState<string>('');
+  const [systemPrompt, setSystemPrompt] = useState<string>('');
+  const [temperature, setTemperature] = useState<number>(0.7);
+
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Filter online / active workers
+  const activeWorkers = useMemo(() => {
+    return (workers || []).filter(
+      (w) => !w.is_revoked && (w.connection_status === 'online' || w.connection_status === 'busy')
+    );
+  }, [workers]);
+
+  // Determine available models for the selected worker or cluster
+  const availableModels = useMemo(() => {
+    if (targetWorkerId) {
+      const target = activeWorkers.find((w) => w.worker_id === targetWorkerId);
+      if (target?.supported_models && target.supported_models.length > 0) {
+        return target.supported_models;
+      }
+    }
+    // Union across all active workers
+    const discovered = Array.from(
+      new Set(activeWorkers.flatMap((w) => w.supported_models || []))
+    );
+    return discovered.length > 0 ? discovered : COMMON_LLM_MODELS;
+  }, [targetWorkerId, activeWorkers]);
 
   const handleTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value as ApprovedJobType;
@@ -40,6 +80,8 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
       setName('Matrix Multiplication Benchmark');
     } else if (val === 'data_processing') {
       setName('Batch Data Transform & Aggregation');
+    } else if (val === 'llm_prompt') {
+      setName('Remote AI Prompt Execution');
     } else {
       setName('Parallel Computing Job');
     }
@@ -52,6 +94,7 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
 
     try {
       let inputPayload: Record<string, any>;
+      const activeModel = selectedModel === 'custom' ? customModel.trim() : selectedModel.trim();
 
       if (useCustomJson) {
         try {
@@ -67,6 +110,20 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
             records: Number(dataRecords),
             operations: ['normalize', 'aggregate', 'checksum'],
           };
+        } else if (jobType === 'llm_prompt') {
+          if (!promptText.trim()) {
+            throw new Error('Please enter a natural-language prompt to submit.');
+          }
+          if (!activeModel) {
+            throw new Error('Please specify an AI model identifier.');
+          }
+          inputPayload = {
+            prompt: promptText.trim(),
+            model: activeModel,
+            system: systemPrompt.trim() || undefined,
+            temperature: Number(temperature),
+            target_worker_id: targetWorkerId || undefined,
+          };
         } else {
           inputPayload = { steps: 10 };
         }
@@ -81,6 +138,8 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
           min_ram_mb: Number(minRamMb),
           gpu_required: gpuRequired,
           timeout_seconds: Number(timeoutSeconds),
+          target_worker_id: targetWorkerId || undefined,
+          model: jobType === 'llm_prompt' ? activeModel : undefined,
         },
       };
 
@@ -102,11 +161,19 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
       onClose={onClose}
       title={
         <div className="flex items-center space-x-2">
-          <PlaySquare className="w-5 h-5 text-blue-400" />
-          <span>Submit Computational Job</span>
+          {jobType === 'llm_prompt' ? (
+            <Bot className="w-5 h-5 text-indigo-400" />
+          ) : (
+            <PlaySquare className="w-5 h-5 text-blue-400" />
+          )}
+          <span>{jobType === 'llm_prompt' ? 'Submit Remote AI Prompt' : 'Submit Computational Job'}</span>
         </div>
       }
-      description="Dispatch a validated computational workload to the distributed cluster."
+      description={
+        jobType === 'llm_prompt'
+          ? 'Submit a prompt to be executed by a local Ollama AI model on a remote connected worker PC.'
+          : 'Dispatch a validated computational workload to the distributed cluster.'
+      }
       maxWidth="max-w-2xl"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
@@ -126,6 +193,7 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
               { label: 'matrix_multiply (Distributed Math)', value: 'matrix_multiply' },
               { label: 'data_processing (Data Pipelines)', value: 'data_processing' },
               { label: 'image_processing (Computer Vision)', value: 'image_processing' },
+              { label: 'llm_prompt (Remote AI Inference)', value: 'llm_prompt' },
             ]}
           />
 
@@ -138,63 +206,160 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
           />
         </div>
 
-        {/* Workload Inputs */}
-        <div className="p-4 rounded-lg bg-[#0d131f] border border-[#1f2937] space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
-              Execution Payload
-            </span>
-            <button
-              type="button"
-              onClick={() => setUseCustomJson(!useCustomJson)}
-              className="text-xs text-blue-400 hover:text-blue-300 font-medium"
-            >
-              {useCustomJson ? 'Use Guided Inputs' : 'Raw JSON Editor'}
-            </button>
-          </div>
+        {/* Remote AI Inference Custom Configuration */}
+        {jobType === 'llm_prompt' && !useCustomJson && (
+          <div className="p-4 rounded-lg bg-indigo-950/20 border border-indigo-900/40 space-y-4">
+            <div className="flex items-center space-x-2 text-xs font-semibold text-indigo-300 uppercase tracking-wider">
+              <Sparkles className="w-4 h-4 text-indigo-400" />
+              <span>AI Worker & Model Configuration</span>
+            </div>
 
-          {!useCustomJson ? (
-            <>
-              {jobType === 'matrix_multiply' && (
-                <Input
-                  label="Matrix Dimension (N x N)"
-                  type="number"
-                  min={2}
-                  max={2000}
-                  value={matrixDim}
-                  onChange={(e) => setMatrixDim(Number(e.target.value))}
-                  helperText="Computes square matrix product on worker subprocess."
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Select
+                label="Target Worker Node"
+                value={targetWorkerId}
+                onChange={(e) => setTargetWorkerId(e.target.value)}
+                options={[
+                  { label: '⚡ Auto-Assign (Adaptive scheduler)', value: '' },
+                  ...activeWorkers.map((w) => ({
+                    label: `${w.display_name || w.hostname} (${w.worker_id})${
+                      w.supported_models && w.supported_models.length > 0
+                        ? ` [${w.supported_models.length} models]`
+                        : ''
+                    }`,
+                    value: w.worker_id,
+                  })),
+                ]}
+                helperText="Select a specific computer or let the coordinator schedule dynamically."
+              />
+
+              <div className="space-y-1">
+                <Select
+                  label="Inference Model"
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  options={[
+                    ...availableModels.map((m) => ({ label: m, value: m })),
+                    { label: '✏️ Custom Model Tag...', value: 'custom' },
+                  ]}
+                  helperText="Local Ollama model installed on the remote machine."
                 />
-              )}
-              {jobType === 'data_processing' && (
-                <Input
-                  label="Dataset Record Count"
-                  type="number"
-                  min={100}
-                  max={1000000}
-                  value={dataRecords}
-                  onChange={(e) => setDataRecords(Number(e.target.value))}
-                  helperText="Simulates data extraction, normalization, and statistical summary."
-                />
-              )}
-              {jobType === 'image_processing' && (
-                <p className="text-xs text-gray-400">
-                  Default image filter parameters will be dispatched to the remote node.
-                </p>
-              )}
-            </>
-          ) : (
-            <div>
+                {selectedModel === 'custom' && (
+                  <Input
+                    label="Custom Model Name"
+                    value={customModel}
+                    onChange={(e) => setCustomModel(e.target.value)}
+                    placeholder="e.g. llama3.2:1b or mistral"
+                    required
+                  />
+                )}
+              </div>
+            </div>
+
+            {/* Prompt Textarea */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between text-xs">
+                <label className="font-medium text-gray-200">Prompt</label>
+                <span className="text-[11px] text-gray-400">
+                  {promptText.length.toLocaleString()} / 32,768 characters
+                </span>
+              </div>
               <textarea
-                value={customJson}
-                onChange={(e) => setCustomJson(e.target.value)}
-                placeholder='{"dim": 100}'
+                value={promptText}
+                onChange={(e) => setPromptText(e.target.value)}
+                maxLength={32768}
                 rows={4}
-                className="w-full font-mono text-xs px-3 py-2 bg-[#0a0e17] border border-[#1f2937] rounded-lg text-gray-200 focus:outline-none focus:border-blue-500"
+                required
+                placeholder="Enter prompt for the remote worker PC (e.g. Explain quantum computing in three bullet points)..."
+                className="w-full text-xs font-sans p-3 bg-[#0a0e17] border border-[#1f2937] rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 leading-relaxed"
               />
             </div>
-          )}
-        </div>
+
+            {/* Optional System Prompt & Temperature */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+              <div className="sm:col-span-2">
+                <Input
+                  label="System Prompt (Optional)"
+                  value={systemPrompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                  placeholder="e.g. You are a concise distributed computing assistant."
+                />
+              </div>
+              <div>
+                <Input
+                  label="Temperature"
+                  type="number"
+                  step="0.1"
+                  min="0.0"
+                  max="2.0"
+                  value={temperature}
+                  onChange={(e) => setTemperature(Number(e.target.value))}
+                  helperText="Default: 0.7"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Traditional Computational Workload Inputs */}
+        {jobType !== 'llm_prompt' && (
+          <div className="p-4 rounded-lg bg-[#0d131f] border border-[#1f2937] space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
+                Execution Payload
+              </span>
+              <button
+                type="button"
+                onClick={() => setUseCustomJson(!useCustomJson)}
+                className="text-xs text-blue-400 hover:text-blue-300 font-medium"
+              >
+                {useCustomJson ? 'Use Guided Inputs' : 'Raw JSON Editor'}
+              </button>
+            </div>
+
+            {!useCustomJson ? (
+              <>
+                {jobType === 'matrix_multiply' && (
+                  <Input
+                    label="Matrix Dimension (N x N)"
+                    type="number"
+                    min={2}
+                    max={2000}
+                    value={matrixDim}
+                    onChange={(e) => setMatrixDim(Number(e.target.value))}
+                    helperText="Computes square matrix product on worker subprocess."
+                  />
+                )}
+                {jobType === 'data_processing' && (
+                  <Input
+                    label="Dataset Record Count"
+                    type="number"
+                    min={100}
+                    max={1000000}
+                    value={dataRecords}
+                    onChange={(e) => setDataRecords(Number(e.target.value))}
+                    helperText="Simulates data extraction, normalization, and statistical summary."
+                  />
+                )}
+                {jobType === 'image_processing' && (
+                  <p className="text-xs text-gray-400">
+                    Default image filter parameters will be dispatched to the remote node.
+                  </p>
+                )}
+              </>
+            ) : (
+              <div>
+                <textarea
+                  value={customJson}
+                  onChange={(e) => setCustomJson(e.target.value)}
+                  placeholder='{"dim": 100}'
+                  rows={4}
+                  className="w-full font-mono text-xs px-3 py-2 bg-[#0a0e17] border border-[#1f2937] rounded-lg text-gray-200 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Requirements */}
         <div className="p-4 rounded-lg bg-[#0d131f] border border-[#1f2937] space-y-3">
@@ -246,7 +411,7 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
             Cancel
           </Button>
           <Button type="submit" variant="primary" disabled={submitting}>
-            {submitting ? 'Submitting & Dispatching...' : 'Submit Job'}
+            {submitting ? 'Submitting & Dispatching...' : jobType === 'llm_prompt' ? 'Send AI Prompt' : 'Submit Job'}
           </Button>
         </div>
       </form>

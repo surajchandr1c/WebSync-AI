@@ -41,6 +41,7 @@ class HeartbeatLoop:
             "total_ram_bytes": metrics["total_ram_bytes"],
             "active_job_count": active_jobs,
             "gpu_metadata": metrics["gpu_metadata"],
+            "supported_models": metrics.get("supported_models", []),
         }
 
     async def send_single_heartbeat(self) -> Dict[str, Any]:

@@ -63,6 +63,11 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if "sqlite" in settings.DATABASE_URL:
+            try:
+                await conn.execute(text("ALTER TABLE workers ADD COLUMN supported_models JSON DEFAULT '[]' NOT NULL"))
+            except Exception:
+                pass
     logger.info("Database schemas initialized successfully.")
 
 
