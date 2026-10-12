@@ -169,7 +169,7 @@ def main():
         type=str,
         default=None,
         dest="coordinator_url",
-        help="Override coordinator base URL (e.g. https://coordinator.up.railway.app)",
+        help="Override coordinator base URL (e.g. https://coordinator.example.com or http://localhost:8000)",
     )
     parser.add_argument(
         "--worker-id",

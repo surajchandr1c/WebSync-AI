@@ -38,6 +38,16 @@ class CoordinatorSettings(BaseSettings):
     MAX_WS_MESSAGE_SIZE_BYTES: int = 2 * 1024 * 1024  # 2MB
     MAX_LLM_PROMPT_CHARS: int = 32768
     MAX_LLM_SYSTEM_CHARS: int = 8192
+    OLLAMA_API_KEY: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("OLLAMA_API_KEY"),
+        description="Ollama Cloud API Key for direct cloud model inference",
+    )
+    OLLAMA_HOST: str = Field(
+        default="https://ollama.com",
+        validation_alias=AliasChoices("OLLAMA_HOST", "OLLAMA_BASE_URL"),
+        description="Ollama Cloud API Base URL",
+    )
 
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = True
@@ -66,7 +76,7 @@ class CoordinatorSettings(BaseSettings):
         if not v:
             return "sqlite+aiosqlite:///./coordinator.db"
         v_str = str(v).strip()
-        # Convert standard Railway postgresql:// or postgres:// to asyncpg dialect
+        # Convert standard postgresql:// or postgres:// to asyncpg dialect
         if v_str.startswith("postgres://"):
             v_str = "postgresql+asyncpg://" + v_str[len("postgres://"):]
         elif v_str.startswith("postgresql://") and not v_str.startswith("postgresql+asyncpg://"):

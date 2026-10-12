@@ -270,6 +270,56 @@ class ModularJobExecutor:
         if options:
             req_body["options"] = options
 
+        import os
+        api_key = os.environ.get("OLLAMA_API_KEY") or getattr(settings, "OLLAMA_API_KEY", None)
+
+        # Direct Ollama Cloud API support if OLLAMA_API_KEY is configured and cloud model is requested
+        use_cloud = (
+            payload.get("use_cloud") is True
+            or payload.get("provider") == "cloud"
+            or model.strip() == "gemma4:31b"
+            or model.strip().startswith("gemma4")
+            or "cloud" in model.lower()
+        )
+        if api_key and use_cloud:
+            cloud_host = getattr(settings, "OLLAMA_HOST", "https://ollama.com").rstrip("/")
+            from ollama import Client
+
+            client = Client(host=cloud_host, headers={"Authorization": f"Bearer {api_key}"})
+            messages = []
+            if system_prompt and isinstance(system_prompt, str) and system_prompt.strip():
+                messages.append({"role": "system", "content": system_prompt.strip()})
+            messages.append({"role": "user", "content": prompt.strip()})
+
+            try:
+                res = client.chat(
+                    model=model.strip(),
+                    messages=messages,
+                    options=options if options else None,
+                )
+                msg_content = res.get("message", {}).get("content", "")
+                output_payload = {
+                    "model": res.get("model", model),
+                    "response": msg_content,
+                    "eval_count": res.get("eval_count"),
+                    "eval_duration_ms": round(res.get("eval_duration", 0) / 1e6, 2) if res.get("eval_duration") else None,
+                    "prompt_eval_count": res.get("prompt_eval_count"),
+                    "total_duration_ms": round(res.get("total_duration", 0) / 1e6, 2) if res.get("total_duration") else None,
+                    "done": res.get("done", True),
+                }
+                return json.dumps(output_payload, indent=2)
+            except Exception as e:
+                err_text = str(e)
+                if "401" in err_text:
+                    raise RuntimeError(f"Ollama Cloud authentication failed (401 Unauthorized): {err_text}") from e
+                elif "402" in err_text:
+                    raise RuntimeError(f"Ollama Cloud payment plan required (402 Payment Required): {err_text}") from e
+                elif "404" in err_text:
+                    raise RuntimeError(f"Ollama Cloud model '{model}' not found (404 Not Found): {err_text}") from e
+                elif "429" in err_text:
+                    raise RuntimeError(f"Ollama Cloud rate limit reached (429 Too Many Requests): {err_text}") from e
+                raise RuntimeError(f"Ollama Cloud inference failed: {err_text}") from e
+
         try:
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 response = await client.post(gen_url, json=req_body)

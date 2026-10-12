@@ -42,13 +42,26 @@ interface ClusterContextType {
 
 const ClusterContext = createContext<ClusterContextType | null>(null);
 
-const DEFAULT_COORDINATOR_URL =
-  process.env.NEXT_PUBLIC_COORDINATOR_URL ||
-  process.env.NEXT_PUBLIC_API_URL ||
-  'http://localhost:8000';
+function resolveDefaultCoordinatorUrl(): string {
+  const configured =
+    process.env.NEXT_PUBLIC_COORDINATOR_URL ||
+    process.env.NEXT_PUBLIC_API_URL;
+  if (configured && !configured.includes('localhost') && !configured.includes('127.0.0.1')) {
+    return configured;
+  }
+  if (
+    typeof window !== 'undefined' &&
+    window.location.hostname &&
+    window.location.hostname !== 'localhost' &&
+    window.location.hostname !== '127.0.0.1'
+  ) {
+    return `${window.location.protocol}//${window.location.hostname}:8000`;
+  }
+  return configured || 'http://localhost:8000';
+}
 
 function deriveWsUrl(coordUrl: string): string {
-  if (process.env.NEXT_PUBLIC_WS_URL) {
+  if (process.env.NEXT_PUBLIC_WS_URL && !process.env.NEXT_PUBLIC_WS_URL.includes('localhost')) {
     return process.env.NEXT_PUBLIC_WS_URL;
   }
   return coordUrl.replace(/^http/, 'ws') + '/ws/dashboard';
@@ -58,8 +71,8 @@ const STORAGE_KEY = 'websync_coordinator_url';
 const TERMINAL_STATES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 
 export function ClusterProvider({ children }: { children: React.ReactNode }) {
-  const [coordinatorUrl, setCoordinatorUrlState] = useState<string>(DEFAULT_COORDINATOR_URL);
-  const [wsUrl, setWsUrl] = useState<string>(() => deriveWsUrl(DEFAULT_COORDINATOR_URL));
+  const [coordinatorUrl, setCoordinatorUrlState] = useState<string>(resolveDefaultCoordinatorUrl);
+  const [wsUrl, setWsUrl] = useState<string>(() => deriveWsUrl(resolveDefaultCoordinatorUrl()));
   const [wsStatus, setWsStatus] = useState<'connected' | 'connecting' | 'disconnected'>('connecting');
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
@@ -94,13 +107,27 @@ export function ClusterProvider({ children }: { children: React.ReactNode }) {
     setWsUrl(wsTarget);
   };
 
-  // Hydration-safe initial check for local storage override
+  // Hydration-safe initial check for local storage override or LAN host auto-detection
   useEffect(() => {
     if (typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved && saved.trim() && saved.trim() !== DEFAULT_COORDINATOR_URL) {
-          setCoordinatorUrl(saved.trim());
+        const isLanClient =
+          window.location.hostname &&
+          window.location.hostname !== 'localhost' &&
+          window.location.hostname !== '127.0.0.1';
+
+        if (saved && saved.trim()) {
+          // If stored URL is localhost but current page was opened over LAN IP, prioritize current LAN host
+          if (isLanClient && (saved.includes('localhost') || saved.includes('127.0.0.1'))) {
+            const lanTarget = `${window.location.protocol}//${window.location.hostname}:8000`;
+            setCoordinatorUrl(lanTarget);
+          } else {
+            setCoordinatorUrl(saved.trim());
+          }
+        } else if (isLanClient) {
+          const lanTarget = `${window.location.protocol}//${window.location.hostname}:8000`;
+          setCoordinatorUrl(lanTarget);
         }
       } catch {}
     }

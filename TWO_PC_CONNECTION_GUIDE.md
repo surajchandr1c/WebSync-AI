@@ -1,364 +1,265 @@
 # WebSync AI — Two-PC Connection & Remote AI Prompt Execution Guide
 
-**WebSync AI** is a distributed computing platform designed to connect multiple computers across local networks (LAN) or the public internet (WAN). It enables you to submit tasks—such as natural-language AI prompts—from one computer (**PC 1**) and execute them using computational hardware (CPU, RAM, GPU, or local Ollama models) on a separate computer (**PC 2**), returning the output directly to your screen.
+**WebSync AI** is a distributed computing platform designed to connect multiple computers across local networks (LAN) or the public internet (WAN). It enables you to orchestrate workloads—such as natural-language AI prompts—and execute them across computational hardware (CPU, RAM, GPU, or local Ollama models).
 
-This guide walks you step-by-step through setting up, connecting, and running remote AI tasks between two computers.
-
----
-
-## 1. What WebSync AI Does
-
-WebSync AI operates as an orchestrated distributed system consisting of four primary components:
-
-1. **Central Coordinator (FastAPI)**: The authoritative control plane. It manages worker node registrations, authenticates connections, tracks live hardware telemetry, runs the multi-criteria adaptive scheduler, stores job history in PostgreSQL or SQLite, and streams events over WebSockets.
-2. **Web Dashboard (Next.js 15)**: The graphical user interface running in your browser on PC 1. It displays real-time cluster health, active nodes, hardware utilization meters, a workload submission modal, and execution logs.
-3. **Worker Agent (Python)**: A lightweight daemon running on PC 2 (and any other worker nodes). It samples host hardware via non-blocking `psutil` and GPU libraries, discovers local AI models running in Ollama, initiates an outbound WebSocket connection to the coordinator, and executes approved workloads.
-4. **Adaptive Scheduler & Handlers**: When a job is submitted, the scheduler scores candidate workers based on CPU load, available RAM, and hardware capabilities. For AI tasks (`llm_prompt`), it matches the requested model against the worker's locally installed Ollama models.
-
-> [!IMPORTANT]
-> **What WebSync AI Is and Is Not:**
-> - WebSync AI **dispatches and executes whole tasks** on designated worker nodes.
-> - Connecting PC 2 to PC 1 does **not** merge or pool physical RAM into a single unified operating system memory space (e.g. connecting two 16 GB PCs does not give your Windows desktop 32 GB of system RAM). Instead, it lets PC 1 offload intensive workloads (like AI inference or matrix math) to PC 2's hardware over the network.
+This guide walks you step-by-step through setting up, connecting, and running remote AI tasks between two computers on a **local Windows LAN**.
 
 ---
 
-## 2. Requirements for Both PCs
+## 1. Topologies
 
-### PC 1: Operator Workstation (Main PC)
-- **Role**: Runs the web dashboard in a browser, accesses the coordinator REST API/WebSockets, submits prompts, and views results.
-- **Operating System**: Windows 10/11, macOS, or Linux.
-- **Software**: Modern web browser (Chrome, Edge, Firefox, Brave, Safari).
-- **Node.js (if hosting dashboard locally)**: Node.js 20 or 22, and `pnpm@9.15.4`.
-- **Network**: Internet access or local network connection to the coordinator.
+### Topology 1: PC 1 as Full Server & AI Host + PC 2 as Client Browser (Recommended)
 
-### PC 2: Worker Node (Compute & AI Workstation)
-- **Role**: Hosts the Python worker agent and local AI inference engine (Ollama).
-- **Operating System**: Windows 10/11 (64-bit), Ubuntu/Debian/Fedora Linux, or macOS (Apple Silicon M-series or Intel).
-- **Python**: Python 3.11, 3.12, or 3.13.
-- **Hardware Recommendations for AI Inference**:
-  - **1B to 3B models** (`llama3.2:1b`, `llama3.2:3b`): Minimum 8 GB RAM. Dedicated GPU optional.
-  - **7B to 8B models** (`llama3:latest`, `mistral:latest`): Minimum 16 GB RAM or NVIDIA GPU with 6+ GB VRAM.
-- **Ollama**: Installed locally on PC 2 (download from [ollama.com](https://ollama.com)).
-- **Network**: Outbound HTTPS and WebSocket access to the coordinator. **No inbound port forwarding or public router openings required.**
-
----
-
-## 3. Recommended Topologies
-
-### Topology A: Different Internet Networks / Cross-WAN (Production Mode)
+In this configuration, **PC 1** handles all server infrastructure, database persistence, worker compute, and AI inference. **PC 2** acts as a thin client workstation that interacts with WebSync AI purely through a web browser.
 
 ```mermaid
 flowchart TD
-    subgraph Net1["Network 1 (e.g., Home Wi-Fi)"]
-        PC1["PC 1 (Operator Workstation)\nOpens Web Dashboard in Browser"]
+    subgraph PC1["PC 1 (Main Computer) — LAN IP: 192.168.1.50"]
+        Coordinator["FastAPI Coordinator\n(0.0.0.0:8000)\nSQLite DB: coordinator.db"]
+        Dashboard["Next.js Web Dashboard\n(0.0.0.0:3000)"]
+        Worker["Python Worker Agent\n(Registered: node-primary)"]
+        Ollama["Ollama AI Daemon\n(Restricted to localhost:11434)"]
+
+        Dashboard -.->|REST / WebSocket| Coordinator
+        Worker -->|Local WS connection| Coordinator
+        Worker -->|Local HTTP inference| Ollama
     end
 
-    subgraph Cloud["Railway Cloud / VPS (Public HTTPS & WSS)"]
-        Coord["WebSync AI Coordinator\n(FastAPI / Uvicorn on 0.0.0.0:$PORT)"]
-        DB[(PostgreSQL Database)]
-        Dash["Next.js Web Dashboard Service"]
-        Coord <--> DB
-        Dash -.-> Coord
+    subgraph PC2["PC 2 (Client Computer) — Any LAN IP"]
+        Browser["Web Browser (Chrome / Edge / Firefox)\nOpens: http://192.168.1.50:3000"]
     end
 
-    subgraph Net2["Network 2 (e.g., Office / Mobile Hotspot)"]
-        PC2["PC 2 (Compute Node)\nWorker Agent (Python)"]
-        Ollama["Ollama Local Daemon\nhttp://localhost:11434"]
-        PC2 <--> Ollama
-    end
-
-    PC1 -->|HTTPS / WSS| Dash
-    PC1 -->|REST API| Coord
-    PC2 -->|Outbound TLS WebSocket (WSS)| Coord
+    Browser -->|HTTP Requests :3000| Dashboard
+    Browser -->|REST API :8000 & WS :8000/ws/dashboard| Coordinator
 ```
 
-- **Coordinator**: Deployed to a publicly accessible HTTPS/WSS service (such as Railway).
-- **PC 1**: Connects to the public dashboard and coordinator.
-- **PC 2**: Initiates an outbound WebSocket to the public coordinator URL. Since the connection is outbound from PC 2, firewalls and routers allow it automatically without port forwarding.
+- **PC 1**: Runs FastAPI Coordinator (`:8000`), Next.js Dashboard (`:3000`), Python Worker Agent, and local Ollama (`:11434`).
+- **PC 2**: Requires **no Python, no Node.js, and no installations**. Opens `http://<PC1-IP>:3000` in any web browser, submits prompts, and displays results generated by PC 1.
+- **Security**: Ollama remains strictly bound to `localhost:11434` on PC 1 and is never exposed directly to the LAN.
 
 ---
 
-### Topology B: Same Local Network / LAN Demo Mode
+### Topology 2: PC 1 as Operator Workstation + PC 2 as Worker Compute Node
+
+In this alternative configuration, PC 1 hosts the coordinator and web dashboard, while PC 2 acts as a dedicated compute node hosting the Python worker agent and local Ollama models.
 
 ```mermaid
 flowchart LR
-    subgraph PC1_Box["PC 1 (Main PC) — LAN IP: 192.168.1.50"]
+    subgraph PC1_Box["PC 1 (Operator Workstation) — LAN IP: 192.168.1.50"]
         Coordinator["FastAPI Coordinator (:8000)"]
         Dashboard["Next.js Dashboard (:3000)"]
     end
 
-    subgraph PC2_Box["PC 2 (Worker PC) — LAN IP: 192.168.1.75"]
+    subgraph PC2_Box["PC 2 (Compute Node) — LAN IP: 192.168.1.75"]
         Worker["Python Worker Agent"]
         Ollama["Ollama (:11434)"]
         Worker <--> Ollama
     end
 
     Worker -->|Outbound HTTP/WS: http://192.168.1.50:8000| Coordinator
+    Dashboard -.-> Coordinator
 ```
-
-- **Coordinator**: Runs on PC 1, listening on `0.0.0.0:8000`.
-- **PC 2**: Connects directly to PC 1's LAN IP address (`http://192.168.1.50:8000`).
 
 ---
 
-## 4. Local Same-Network (LAN) Setup Walkthrough
+## 2. Requirements
 
-### Step 1: Find PC 1's Local IP Address
-On PC 1, open PowerShell and run:
+### PC 1: Main Computer (Server & AI Host)
+- **Operating System**: Windows 10/11 (64-bit).
+- **Python**: Python 3.11, 3.12, or 3.13 (virtual environment `.venv`).
+- **Node.js**: Node.js 20 or 22 with `pnpm@9.15.4`.
+- **Ollama**: Installed locally on PC 1 (from [ollama.com](https://ollama.com)).
+- **Hardware**: Sufficient RAM / VRAM for your selected model (e.g. 8+ GB RAM for `llama3.2:1b` or `llama3.2:3b`, or Ollama Cloud).
+- **Network**: Connected to the private Wi-Fi or Ethernet network.
+
+### PC 2: Client Computer
+- **Operating System**: Windows, macOS, Linux, or iPad/tablet.
+- **Software**: Any modern browser (Chrome, Edge, Firefox, Brave, Safari).
+- **Network**: Connected to the same private Wi-Fi or Ethernet network as PC 1.
+
+---
+
+## 3. Step-by-Step Setup for Topology 1 (PC 1 Server + PC 2 Browser)
+
+### Step 1: Find PC 1's LAN IPv4 Address
+On **PC 1**, open PowerShell and run:
 ```powershell
 ipconfig
 ```
-Look for **IPv4 Address** under your active Wi-Fi or Ethernet adapter (e.g., `192.168.1.50`).
+Look for the **IPv4 Address** under your active Wi-Fi or Ethernet adapter (for example: `192.168.1.50`). Note this IP address down.
 
-### Step 2: Start Coordinator on PC 1
-On PC 1, from the `WebSync_AI` repository root:
+---
+
+### Step 2: Configure PC 1 Windows Firewall
+Allow inbound private-network TCP connections for the coordinator (port 8000) and dashboard (port 3000).
+
+On **PC 1**, open PowerShell as Administrator and run:
 ```powershell
-# Activate Python environment
-.\.venv\Scripts\Activate.ps1
+# Allow Next.js Dashboard on Port 3000
+New-NetFirewallRule -DisplayName "WebSync AI Dashboard (Port 3000)" -Direction Inbound -LocalPort 3000 -Protocol TCP -Action Allow -Profile Private
 
-# Start coordinator listening on all interfaces
-python -m uvicorn coordinator.main:app --host 0.0.0.0 --port 8000
+# Allow FastAPI Coordinator API & WebSockets on Port 8000
+New-NetFirewallRule -DisplayName "WebSync AI Coordinator (Port 8000)" -Direction Inbound -LocalPort 8000 -Protocol TCP -Action Allow -Profile Private
 ```
+> [!NOTE]
+> Do **not** open port 11434. Ollama remains local to PC 1 on `localhost:11434`.
 
-### Step 3: Configure PC 1 Windows Firewall
-Allow incoming connections on port 8000 for private networks:
-```powershell
-New-NetFirewallRule -DisplayName "WebSync AI Coordinator" -Direction Inbound -LocalPort 8000 -Protocol TCP -Action Allow -Profile Private
-```
+---
 
-### Step 4: Start Dashboard on PC 1
-In a second terminal on PC 1:
-```powershell
-# Start Next.js development server
-pnpm --filter @websync/dashboard dev
-```
-Open `http://localhost:3000` in your browser.
-
-### Step 5: Start Ollama on PC 2
-On PC 2, open a terminal:
+### Step 3: Start Ollama on PC 1
+On **PC 1**, open a terminal:
 ```bash
-# Verify Ollama is running
+# Verify Ollama daemon is running
 ollama serve
 ```
-In another terminal, pull a model:
+In a second terminal, verify that an open model is downloaded (or pull one):
 ```bash
+ollama list
+# If no model is installed, pull a lightweight model:
 ollama pull llama3.2:latest
 ```
 
-### Step 6: Start Worker Agent on PC 2
-On PC 2, clone or copy the `WebSync_AI` repository, activate the Python virtual environment, and launch:
+---
+
+### Step 4: Start the Coordinator on PC 1
+On **PC 1**, navigate to the project directory and run:
 ```powershell
-# Replace 192.168.1.50 with PC 1's actual IP address
-python -m worker.agent.main `
-  --coordinator-url http://192.168.1.50:8000 `
-  --worker-id node-pc2-workstation `
-  --worker-name "PC2-Compute-Rig" `
+# Set Python path to include coordinator and worker packages
+$env:PYTHONPATH="services/coordinator/src;worker;."
+
+# Start FastAPI Coordinator listening on 0.0.0.0 (all network interfaces)
+.\.venv\Scripts\python.exe -m uvicorn coordinator.main:app --host 0.0.0.0 --port 8000
+```
+Verify that the output shows:
+```
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     CORS origins configured: ...
+```
+
+---
+
+### Step 5: Start the Python Worker Agent on PC 1
+On **PC 1**, open another PowerShell terminal and launch the worker agent:
+```powershell
+$env:PYTHONPATH="services/coordinator/src;worker;."
+
+.\.venv\Scripts\python.exe -m worker.agent.main `
+  --coordinator-url http://localhost:8000 `
+  --worker-id node-primary-pc1 `
+  --worker-name "PC1-AI-Engine" `
   --token test-dev-worker-token
 ```
-PC 2 will discover `llama3.2:latest` from its local Ollama instance and register with PC 1.
+The console will log:
+```
+[INFO] [worker-agent] Worker registered successfully with coordinator. Worker ID: node-primary-pc1
+[INFO] [worker-agent] Connected to coordinator WebSocket at ws://localhost:8000/ws/worker
+```
+The worker will automatically detect your local Ollama models (e.g. `llama3.2:latest`) and advertise them in its hardware capabilities.
 
 ---
 
-## 5. Different-Network (Cross-WAN) Setup with Railway
-
-When PC 1 and PC 2 are on completely different internet connections, host the coordinator publicly on Railway.
-
-### Deployment Summary
-1. **PostgreSQL**: Deploy Railway PostgreSQL plugin.
-2. **Coordinator**: Deploy from `infra/docker/Dockerfile.coordinator` on Railway.
-   - Set `ENVIRONMENT=production`.
-   - Set `DATABASE_URL=${{Postgres.DATABASE_URL}}`.
-   - Set `WORKER_DEV_AUTH_TOKEN=<CHOOSE_A_SECURE_TOKEN>`.
-   - Railway assigns a public URL, e.g.: `https://websync-coordinator.up.railway.app`.
-3. **Dashboard**: Deploy Next.js on Railway (or run locally on PC 1 pointing to the Railway coordinator):
-   - Set `NEXT_PUBLIC_API_URL=https://websync-coordinator.up.railway.app`.
-   - Set `NEXT_PUBLIC_WS_URL=wss://websync-coordinator.up.railway.app/ws/dashboard`.
-
-### Connecting PC 2 from Another Network
-On PC 2 (connected to home Wi-Fi, office network, or mobile hotspot):
+### Step 6: Start the Dashboard on PC 1
+On **PC 1**, open another terminal:
 ```powershell
-python -m worker.agent.main `
-  --coordinator-url https://websync-coordinator.up.railway.app `
-  --worker-id remote-pc2-gpu `
-  --worker-name "PC2-Remote-Workstation" `
-  --token <YOUR_SECURE_TOKEN>
+pnpm --filter @websync/dashboard dev
 ```
-1. PC 2 dials outbound HTTPS to register.
-2. PC 2 establishes an outbound persistent WSS connection (`wss://websync-coordinator.up.railway.app/ws/worker`).
-3. Since PC 2 initiated the outbound connection, no router ports need to be forwarded on PC 2.
+Next.js will output:
+```
+   ▲ Next.js 15.5.27
+   - Local:        http://localhost:3000
+   - Network:      http://192.168.1.50:3000
+ ✓ Ready in 2.4s
+```
 
 ---
 
-## 6. Ollama Setup on PC 2
-
-### 1. Installation
-- **Windows**: Download and run the installer from [ollama.com/download/windows](https://ollama.com/download/windows).
-- **macOS**: Download from [ollama.com/download/mac](https://ollama.com/download/mac).
-- **Linux**: Run:
-  ```bash
-  curl -fsSL https://ollama.com/install.sh | sh
-  ```
-
-### 2. Downloading Compatible Models
-Choose a model suited to PC 2's hardware:
-```bash
-# For laptops or computers with 8 GB to 16 GB RAM (Fast, low resource consumption)
-ollama pull llama3.2:latest
-ollama pull llama3.2:1b
-
-# For workstations with 16+ GB RAM or dedicated GPUs (High capability)
-ollama pull mistral:latest
-ollama pull phi3:latest
-ollama pull gemma2:latest
+### Step 7: Open the Dashboard on PC 2
+On **PC 2**, open your browser (Chrome, Edge, Firefox) and navigate to:
 ```
-
-### 3. Verify Local API Availability
-On PC 2, check that the local Ollama API is responding:
-```bash
-curl http://localhost:11434/api/tags
+http://192.168.1.50:3000
 ```
-Expected output: A JSON object containing your downloaded models:
-```json
-{"models":[{"name":"llama3.2:latest",...}]}
-```
+*(Replace `192.168.1.50` with PC 1's actual LAN IPv4 address).*
 
-> [!CAUTION]
-> **Keep Ollama Local:** Never bind Ollama's port to `0.0.0.0` or open port 11434 on your router. WebSync AI's worker agent communicates with Ollama strictly via `localhost` and relays authenticated tasks securely.
+1. The WebSync AI Dashboard will load on PC 2 with its full dark UI.
+2. The client-side dashboard automatically resolves PC 1's LAN address (`http://192.168.1.50:8000` and `ws://192.168.1.50:8000/ws/dashboard`).
+3. Click on **Connected Nodes (`/workers`)** in the sidebar. You will see **`PC1-AI-Engine`** (`node-primary-pc1`) displayed as **online** with real CPU, RAM, and GPU telemetry.
 
 ---
 
-## 7. Exact Environment Configuration
-
-### Summary Table
-
-| Variable | Used By | Example Value | Description |
-| :--- | :--- | :--- | :--- |
-| `ENVIRONMENT` | Coordinator | `production` or `development` | Operating mode |
-| `COORDINATOR_HOST` | Coordinator | `0.0.0.0` | Bind interface |
-| `PORT` | Coordinator | `8000` | Port assigned by host/Railway |
-| `DATABASE_URL` | Coordinator | `postgresql+asyncpg://...` | Connection string |
-| `COORDINATOR_SECRET_KEY` | Coordinator | `32+ random characters` | JWT token signing key |
-| `WORKER_DEV_AUTH_TOKEN` | Coordinator & Worker | `secure-shared-worker-token` | Pre-shared worker enrollment secret |
-| `NEXT_PUBLIC_API_URL` | Dashboard (PC 1) | `https://coordinator.railway.app` | Coordinator REST base URL |
-| `NEXT_PUBLIC_WS_URL` | Dashboard (PC 1) | `wss://coordinator.railway.app/ws/dashboard` | Coordinator dashboard WebSocket URL |
-| `WEB_SYNC_COORDINATOR_URL` | Worker (PC 2) | `https://coordinator.railway.app` | Coordinator endpoint for worker |
-| `WEB_SYNC_WORKER_ID` | Worker (PC 2) | `node-pc2-workstation` | Unique node identifier |
-| `WEB_SYNC_WORKER_NAME` | Worker (PC 2) | `PC2 Workstation` | Human-readable node display name |
-| `WEB_SYNC_WORKER_TOKEN` | Worker (PC 2) | `secure-shared-worker-token` | Pre-shared secret matching coordinator |
-| `WEB_SYNC_OLLAMA_URL` | Worker (PC 2) | `http://localhost:11434` | Local Ollama endpoint |
-| `OLLAMA_TIMEOUT_SECONDS` | Worker (PC 2) | `300` | Maximum inference generation timeout |
-
----
-
-## 8. How to Send a Prompt from PC 1 to PC 2
-
-### Method 1: Using the Web Dashboard (Recommended)
-
-1. Open the dashboard on PC 1 (`http://localhost:3000` or your deployed URL).
-2. Go to **Connected Nodes (`/workers`)**:
-   - Verify that **PC 2** appears with status `online` and lists installed models (e.g., `llama3.2:latest`).
-3. Navigate to **Jobs (`/jobs`)** and click **Submit Computational Job**.
-4. Configure the job modal:
+### Step 8: Submit a Remote AI Prompt from PC 2
+1. On PC 2's browser, navigate to **Jobs (`/jobs`)** and click **Submit Computational Job**.
+2. Set the modal options:
    - **Workload Type**: Select **`llm_prompt (Remote AI Inference)`**.
-   - **Job Name**: Enter a descriptive name (e.g., `Explain Distributed Systems`).
-   - **Target Worker Node**: Select **PC 2** from the dropdown (or leave as `⚡ Auto-Assign`).
-   - **Inference Model**: Select `llama3.2:latest`.
-   - **Prompt**: Type your prompt, for example:
-     > *"Explain how distributed systems handle node failures in three bullet points."*
-   - **System Prompt (Optional)**: *"You are an expert distributed systems engineer."*
-   - **Temperature**: `0.7`
-5. Click **Send AI Prompt**.
-6. **Watch Real-Time Execution**:
-   - Status transitions: `QUEUED` $\to$ `SCHEDULED` $\to$ `RUNNING` $\to$ `COMPLETED`.
-   - Click on the job to inspect the generated response, latency in seconds, and token generation count.
-   - Click **Copy Response** to copy the generated text.
+   - **Job Name**: `Test LAN AI Prompt`.
+   - **Target Worker Node**: Select `PC1-AI-Engine (node-primary-pc1)`.
+   - **Inference Model**: Select your model (e.g., `llama3.2:latest` or `gemma4:31b`).
+   - **Prompt**: Type your natural language prompt:
+     > *"Explain why distributed computing is useful in two clear sentences."*
+3. Click **Send AI Prompt**.
+4. **Watch Real-Time Execution**:
+   - The job is dispatched from PC 2's browser to PC 1's coordinator.
+   - PC 1's coordinator sends the workload to PC 1's worker agent.
+   - PC 1's worker invokes Ollama locally, streams tokens, and returns the finished response.
+   - PC 2's dashboard updates in real-time to **`COMPLETED`**.
+5. Click on the completed job card on PC 2 to view the **Job Results Modal**:
+   - The full AI response text is displayed.
+   - Generation latency and token evaluation counts are shown.
 
 ---
 
-### Method 2: Using the REST API via cURL
+## 4. Environment Variables Reference
 
-You can also submit the prompt directly via cURL from PC 1:
-
-```bash
-curl -X POST "http://<COORDINATOR-URL>/api/v1/jobs" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Explain Microservices",
-    "job_type": "llm_prompt",
-    "input_payload": {
-      "prompt": "What are microservices in two sentences?",
-      "model": "llama3.2:latest",
-      "temperature": 0.5,
-      "target_worker_id": "node-pc2-workstation"
-    },
-    "requirements": {
-      "model": "llama3.2:latest",
-      "target_worker_id": "node-pc2-workstation",
-      "timeout_seconds": 60
-    }
-  }'
-```
-
-Query the result when finished:
-```bash
-curl "http://<COORDINATOR-URL>/api/v1/jobs/<JOB_ID>/result"
-```
+| Variable | Used By | Local LAN Value | Description |
+| :--- | :--- | :--- | :--- |
+| `COORDINATOR_HOST` | PC 1 Coordinator | `0.0.0.0` | Binds to all network interfaces |
+| `COORDINATOR_PORT` / `PORT` | PC 1 Coordinator | `8000` | Port for REST API and WebSockets |
+| `DATABASE_URL` | PC 1 Coordinator | `sqlite+aiosqlite:///./coordinator.db` | Local SQLite database |
+| `COORDINATOR_ALLOWED_ORIGINS` | PC 1 Coordinator | `http://localhost:3000,...` | Allowed CORS origins (LAN IPs automatically matched via regex) |
+| `WEB_SYNC_COORDINATOR_URL` | PC 1 Worker | `http://localhost:8000` | Local coordinator endpoint |
+| `WEB_SYNC_OLLAMA_URL` | PC 1 Worker | `http://localhost:11434` | Local Ollama daemon endpoint |
+| `NEXT_PUBLIC_COORDINATOR_URL` | PC 2 Browser | Auto-detected | Defaults to `http://<current-host>:8000` when accessed over LAN |
+| `NEXT_PUBLIC_WS_URL` | PC 2 Browser | Auto-detected | Defaults to `ws://<current-host>:8000/ws/dashboard` when accessed over LAN |
 
 ---
 
-## 9. Troubleshooting & Diagnostics
+## 5. Troubleshooting & Diagnostics
 
-### 1. PC 2 fails to connect: `ConnectionRefusedError` or `HTTP Connection Error`
-- **Cause**: The worker on PC 2 cannot reach the coordinator URL, or the coordinator process is not running.
-- **Diagnostic**: On PC 2, test basic HTTP connectivity:
+### 1. PC 2 cannot open `http://<PC1-IP>:3000` ("Site can't be reached")
+- **Cause**: Windows Firewall on PC 1 is blocking port 3000, or PC 1 and PC 2 are on different Wi-Fi networks (e.g. guest network isolation).
+- **Diagnostic**: On PC 2, open PowerShell or terminal and test port connectivity:
   ```powershell
-  curl http://<COORDINATOR_IP_OR_URL>/health
+  Test-NetConnection -ComputerName <PC1-IP> -Port 3000
   ```
-- **Fix**: Check that the coordinator is running and listening on `0.0.0.0` (not `127.0.0.1`), and verify that firewalls allow port 8000.
+- **Fix**: Run the firewall command on PC 1 (from Step 2). Ensure both PCs are connected to the same Wi-Fi SSID and that network profile is set to **Private**.
 
-### 2. `The executable 'pnpm' could not be found` (Railway Build)
-- **Cause**: Using Nixpacks or a custom build command on Railway without pnpm installed in the container path.
-- **Fix**: In Railway service settings, leave the **Build Command** blank when using Dockerfiles. If using Nixpacks, ensure `nixpacks.toml` runs `cmds = ["npm install -g pnpm@9.15.4"]` in `[phases.setup]`.
-
-### 3. PC 2 shows `online` but no models appear in dropdown
-- **Cause**: Ollama is not running on PC 2, or no models have been pulled yet.
-- **Diagnostic**: On PC 2, run:
-  ```bash
-  curl http://localhost:11434/api/tags
+### 2. Dashboard loads on PC 2, but status shows "Disconnected" from Coordinator
+- **Cause**: Windows Firewall is blocking port 8000 on PC 1.
+- **Diagnostic**: In PC 2's browser, open `http://<PC1-IP>:8000/api/v1/health` directly. You should see:
+  ```json
+  {"status":"healthy","service":"websync-coordinator",...}
   ```
-- **Fix**: Run `ollama serve` and `ollama pull llama3.2:latest`. PC 2 will detect the models and advertise them in its next heartbeat (sent every 10 seconds).
+- **Fix**: Allow port 8000 in PC 1's Windows Firewall:
+  ```powershell
+  New-NetFirewallRule -DisplayName "WebSync AI Coordinator" -Direction Inbound -LocalPort 8000 -Protocol TCP -Action Allow -Profile Private
+  ```
 
-### 4. Job fails with `Ollama inference engine is not reachable on this node`
-- **Cause**: The Ollama background service stopped or crashed on PC 2.
-- **Fix**: Restart Ollama on PC 2: `ollama serve`.
+### 3. Worker on PC 1 does not show up in the Connected Nodes list
+- **Cause**: Worker agent is not running on PC 1 or failed to authenticate.
+- **Fix**: Check PC 1 worker console logs. Run `python -m worker.agent.main --inspect` to verify that hardware telemetry is readable.
 
-### 5. Job status stays `QUEUED` without scheduling
-- **Cause**: The requested model (e.g., `mistral:latest`) is not installed on any online worker, or the target worker specified by `target_worker_id` is offline.
-- **Diagnostic**: Inspect the job in the dashboard or query `GET /api/v1/jobs/{job_id}` to check `placement_reason`.
-- **Fix**: Pull the model on PC 2 (`ollama pull <model>`) or target an online worker that has the model.
+### 4. Submitted `llm_prompt` job fails with `Ollama inference engine is not reachable`
+- **Cause**: Ollama is not running on PC 1.
+- **Diagnostic**: On PC 1, run `curl http://localhost:11434/api/tags`.
+- **Fix**: Launch `ollama serve` in a background terminal on PC 1.
 
 ---
 
-## 10. Security Checklist
+## 6. End-to-End Verification Checklist
 
-- [x] **TLS Encryption**: All public internet connections use HTTPS (`https://`) and secure WebSockets (`wss://`).
-- [x] **No Inbound Open Ports on Worker**: PC 2 initiates outbound connections only. No home/router port forwarding is needed.
-- [x] **Safe Workload Execution**: Prompts are executed strictly via the Ollama JSON API. They are **never** executed as arbitrary shell strings or evaluated as Python code.
-- [x] **Credential Isolation**: Pre-shared enrollment secrets and JWT tokens are stored in environment variables, never hardcoded in frontend bundles.
-- [x] **Strict Input Bounds**: Prompts are limited to a maximum of 32,768 characters, and models must match valid identifier patterns.
-- [x] **Worker Result Verification**: The coordinator validates that only the worker assigned to a job can submit results for it.
-
----
-
-## 11. End-to-End Verification Checklist
-
-Perform this checklist to verify your multi-computer setup:
-
-- [ ] **Step 1**: Start the coordinator and confirm health: `curl http://<COORDINATOR-URL>/health` returns `{"status": "healthy"}`.
-- [ ] **Step 2**: Start Ollama on PC 2: `curl http://localhost:11434/api/tags` lists at least one model.
-- [ ] **Step 3**: Start the worker agent on PC 2: console logs confirm `Worker registered successfully` and `WebSocket connected`.
-- [ ] **Step 4**: Open the dashboard on PC 1: PC 2 appears in `/workers` with state `online` and lists your Ollama model.
-- [ ] **Step 5**: Submit an `llm_prompt` job targeting PC 2.
-- [ ] **Step 6**: Verify that PC 2's worker agent logs show receipt of the job and invocation of the local Ollama API.
-- [ ] **Step 7**: Verify that PC 1's dashboard transitions the job to `COMPLETED` and renders the real generated response, model badge, and execution time.
-- [ ] **Step 8**: Simulate disconnect: Stop the worker on PC 2 and confirm that PC 1's dashboard marks the node `offline` after the heartbeat timeout expires.
+- [ ] **Check 1**: On PC 1, `curl http://localhost:8000/api/v1/health` returns `{"status":"healthy"}`.
+- [ ] **Check 2**: On PC 1, `curl http://localhost:11434/api/tags` lists installed models.
+- [ ] **Check 3**: On PC 1, worker agent terminal logs `Connected to coordinator WebSocket`.
+- [ ] **Check 4**: On PC 2, opening `http://<PC1-IP>:3000` renders the dashboard with "Connected & Healthy".
+- [ ] **Check 5**: On PC 2, navigating to `/workers` lists `node-primary-pc1` with `online` status.
+- [ ] **Check 6**: On PC 2, submitting an `llm_prompt` job transitions from `QUEUED` $\to$ `RUNNING` $\to$ `COMPLETED`.
+- [ ] **Check 7**: On PC 2, opening the completed job displays the authentic AI response generated on PC 1.

@@ -160,6 +160,7 @@ def detect_ollama_models(
     if not force_refresh and (now - _cached_ollama_time) < 15.0:
         return _cached_ollama_result
 
+    check_cloud = (ollama_url is None)
     if ollama_url is None:
         try:
             from worker.agent.config import settings
@@ -170,28 +171,50 @@ def detect_ollama_models(
     ollama_url = ollama_url.rstrip("/")
     tags_url = f"{ollama_url}/api/tags"
 
+    models = []
+    is_available = False
+
+    # 1. Check local Ollama instance
     try:
         import httpx
-
         with httpx.Client(timeout=timeout) as client:
             resp = client.get(tags_url)
             if resp.status_code == 200:
                 data = resp.json()
                 raw_models = data.get("models", [])
-                models = []
                 for item in raw_models:
                     name = item.get("name") or item.get("model")
                     if name and isinstance(name, str):
                         models.append(name)
-                _cached_ollama_time = now
-                _cached_ollama_result = (True, models)
-                return True, models
+                is_available = True
     except Exception as e:
-        logger.debug("Ollama is not reachable at %s: %s", tags_url, str(e))
+        logger.debug("Local Ollama is not reachable at %s: %s", tags_url, str(e))
 
+    # 2. Check Ollama Cloud API if OLLAMA_API_KEY is configured and no specific local URL was passed
+    if check_cloud:
+        try:
+            import os
+            from worker.agent.config import settings
+            api_key = os.environ.get("OLLAMA_API_KEY") or getattr(settings, "OLLAMA_API_KEY", None)
+            if api_key:
+                cloud_host = getattr(settings, "OLLAMA_HOST", "https://ollama.com").rstrip("/")
+                from ollama import Client
+                cloud_client = Client(host=cloud_host, headers={"Authorization": f"Bearer {api_key}"})
+                cloud_list = cloud_client.list()
+                cloud_models = [m.model for m in getattr(cloud_list, "models", []) if getattr(m, "model", None)]
+                if cloud_models:
+                    models.extend(cloud_models)
+                    is_available = True
+                elif "gemma4:31b" not in models:
+                    models.append("gemma4:31b")
+                    is_available = True
+        except Exception as e:
+            logger.debug("Ollama Cloud models check skipped: %s", str(e))
+
+    deduped = list(dict.fromkeys(models))
     _cached_ollama_time = now
-    _cached_ollama_result = (False, [])
-    return False, []
+    _cached_ollama_result = (is_available, deduped)
+    return is_available, deduped
 
 
 def get_supported_workloads() -> List[str]:

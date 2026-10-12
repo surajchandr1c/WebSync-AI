@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
+import { useCluster } from '@/context/ClusterContext';
 
 interface HealthData {
   status: string;
@@ -17,6 +18,7 @@ interface HealthData {
 }
 
 export function ConnectionStatus() {
+  const { coordinatorUrl } = useCluster();
   const [data, setData] = useState<HealthData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -26,7 +28,6 @@ export function ConnectionStatus() {
     setLoading(true);
     setError(null);
     try {
-      const coordinatorUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
       const res = await fetch(`${coordinatorUrl}/api/v1/health`, {
         cache: 'no-store',
       });
@@ -78,7 +79,7 @@ export function ConnectionStatus() {
           </div>
           <div>
             <CardTitle>Coordinator API Connection</CardTitle>
-            <p className="text-xs text-gray-400">Target: http://localhost:8000/api/v1/health</p>
+            <p className="text-xs text-gray-400">Target: {coordinatorUrl}/api/v1/health</p>
           </div>
         </div>
 

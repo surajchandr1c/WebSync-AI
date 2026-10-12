@@ -114,7 +114,7 @@ The platform incorporates an automated logging filter (`SensitiveDataFilter` in 
 5. Coordinator secret keys    -> [REDACTED_SECRET]
 ```
 
-This prevents accidental exposure of sensitive keys in container logs (such as Railway or Datadog).
+This prevents accidental exposure of sensitive keys in container logs or log aggregators (such as CloudWatch or Datadog).
 
 ---
 
