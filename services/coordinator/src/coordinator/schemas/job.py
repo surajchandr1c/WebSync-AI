@@ -12,6 +12,7 @@ class ApprovedJobType(str, Enum):
     DATA_PROCESSING = "data_processing"
     IMAGE_PROCESSING = "image_processing"
     LLM_PROMPT = "llm_prompt"
+    DISTRIBUTED_DATA_PROCESSING = "distributed_data_processing"
 
 
 class JobState(str, Enum):
@@ -51,9 +52,10 @@ class JobRequirements(BaseModel):
 
 class JobCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=128, description="Descriptive job name")
-    job_type: str = Field(..., description="Approved job type (matrix_multiply, data_processing, image_processing, llm_prompt)")
+    job_type: str = Field(..., description="Approved job type (matrix_multiply, data_processing, image_processing, llm_prompt, distributed_data_processing)")
     input_payload: Dict[str, Any] = Field(..., description="Job execution input parameters")
     requirements: Optional[JobRequirements] = Field(default_factory=JobRequirements)
+    parent_job_id: Optional[str] = Field(None, max_length=36, description="Parent job ID for distributed child tasks")
 
     @field_validator("job_type")
     @classmethod
@@ -106,6 +108,14 @@ class JobCreateRequest(BaseModel):
                 if not isinstance(temp, (int, float)) or temp < 0.0 or temp > 2.0:
                     raise ValueError("Temperature must be a number between 0.0 and 2.0.")
 
+        elif job_type == ApprovedJobType.DISTRIBUTED_DATA_PROCESSING.value:
+            if "partitions" in v:
+                partitions = v["partitions"]
+                if not isinstance(partitions, int) or partitions < 2 or partitions > 16:
+                    raise ValueError("Partitions for 'distributed_data_processing' must be an integer between 2 and 16.")
+            if "records" in v and v["records"] is not None and not isinstance(v["records"], list):
+                raise ValueError("records for 'distributed_data_processing' must be a list if provided.")
+
         return v
 
 
@@ -116,6 +126,8 @@ class JobResponse(BaseModel):
     status: str
     created_by_user_id: Optional[str] = None
     assigned_worker_id: Optional[str] = None
+    parent_job_id: Optional[str] = None
+    child_count: Optional[int] = 0
     input_payload: Dict[str, Any]
     requirements: Dict[str, Any]
     placement_reason: Optional[Dict[str, Any]] = None

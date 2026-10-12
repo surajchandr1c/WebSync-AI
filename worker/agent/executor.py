@@ -8,6 +8,8 @@ import psutil
 import httpx
 
 from worker.agent.config import settings
+from worker.agent.capabilities import detect_ollama_status, model_matches
+from worker.agent.pull_manager import is_model_pulling
 
 logger = logging.getLogger("websync-worker.executor")
 
@@ -130,14 +132,18 @@ class ModularJobExecutor:
             cpu_pct = psutil.cpu_percent(interval=None)
             max_cpu = getattr(settings, "WORKER_MAX_CPU_PERCENT", 90.0)
             if cpu_pct > max_cpu:
-                return WorkloadExecutionResult(
-                    job_id=job_id,
-                    job_type=job_type,
-                    exit_code=-1,
-                    output="",
-                    duration_seconds=0.0,
-                    error=f"Host CPU utilization too high ({cpu_pct:.1f}% > {max_cpu:.1f}%)",
-                )
+                # Re-sample over a 100ms window to prevent false-positive instantaneous delta spikes
+                await asyncio.sleep(0.1)
+                cpu_pct = psutil.cpu_percent(interval=None)
+                if cpu_pct > max_cpu:
+                    return WorkloadExecutionResult(
+                        job_id=job_id,
+                        job_type=job_type,
+                        exit_code=-1,
+                        output="",
+                        duration_seconds=0.0,
+                        error=f"Host CPU utilization sustained too high ({cpu_pct:.1f}% > {max_cpu:.1f}%)",
+                    )
 
             avail_ram_mb = psutil.virtual_memory().available / (1024 * 1024)
             min_ram_mb = getattr(settings, "WORKER_MIN_AVAILABLE_RAM_MB", 512)
@@ -271,15 +277,31 @@ class ModularJobExecutor:
             req_body["options"] = options
 
         import os
+
+        # 1. Guard against in-flight downloads
+        if is_model_pulling(model.strip()):
+            raise RuntimeError(
+                f"Model '{model}' is currently downloading on this node (pull in progress). "
+                f"Please wait until the download completes before running inference."
+            )
+
+        # 2. Check local Ollama daemon status and installed models
+        status_info = detect_ollama_status(ollama_url=ollama_url)
+        if status_info["status"] in ("stopped", "not_installed", "unreachable"):
+            raise RuntimeError(
+                f"Ollama inference engine is {status_info['status']} on this node at '{ollama_url}'. "
+                f"Please ensure Ollama is installed and running ('ollama serve')."
+            )
+
+        installed_models = status_info.get("installed_models", [])
+        is_local = any(model_matches(model.strip(), m) for m in installed_models)
+
         api_key = os.environ.get("OLLAMA_API_KEY") or getattr(settings, "OLLAMA_API_KEY", None)
 
-        # Direct Ollama Cloud API support if OLLAMA_API_KEY is configured and cloud model is requested
+        # Use Ollama Cloud API only if explicitly requested
         use_cloud = (
             payload.get("use_cloud") is True
             or payload.get("provider") == "cloud"
-            or model.strip() == "gemma4:31b"
-            or model.strip().startswith("gemma4")
-            or "cloud" in model.lower()
         )
         if api_key and use_cloud:
             cloud_host = getattr(settings, "OLLAMA_HOST", "https://ollama.com").rstrip("/")
@@ -332,7 +354,7 @@ class ModularJobExecutor:
                         pass
                     raise RuntimeError(
                         f"Model '{model}' not found in local Ollama repository on this node. "
-                        f"To download it, run: 'ollama pull {model}'. (Details: {err_msg or response.text})"
+                        f"To download it, run: 'ollama pull {model}' or use the dashboard 'Install Model' action. (Details: {err_msg or response.text})"
                     )
 
                 if response.status_code != 200:
@@ -467,10 +489,18 @@ class ModularJobExecutor:
         min_val = min(values)
         max_val = max(values)
 
-        return (
-            f"Processed {count} records. Aggregated sum: {total_sum:.2f}, "
-            f"Mean: {avg:.2f}, Min: {min_val:.2f}, Max: {max_val:.2f}"
-        )
+        result_data = {
+            "status": "success",
+            "partition_index": payload.get("partition_index"),
+            "total_partitions": payload.get("total_partitions"),
+            "record_count": count,
+            "sum": round(total_sum, 4),
+            "mean": round(avg, 4),
+            "min": round(min_val, 4),
+            "max": round(max_val, 4),
+            "summary": f"Processed {count} records. Aggregated sum: {total_sum:.2f}, Mean: {avg:.2f}, Min: {min_val:.2f}, Max: {max_val:.2f}",
+        }
+        return json.dumps(result_data, indent=2)
 
     @staticmethod
     async def _run_image_processing(payload: Dict[str, Any]) -> str:

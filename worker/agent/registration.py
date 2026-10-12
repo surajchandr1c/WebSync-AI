@@ -36,12 +36,23 @@ class RegistrationManager:
             "platform": specs["platform"],
             "platform_version": specs["platform_version"],
             "cpu_utilization": metrics["cpu_utilization"],
+            "cpu_count_logical": specs.get("cpu_count_logical", 1),
+            "cpu_count_physical": specs.get("cpu_count_physical", 1),
             "total_ram_bytes": specs["total_ram_bytes"],
             "available_ram_bytes": metrics["available_ram_bytes"],
+            "used_ram_bytes": specs.get("used_ram_bytes", 0),
+            "websync_available_ram_bytes": specs.get("websync_available_ram_bytes", metrics["available_ram_bytes"]),
+            "disk_total_bytes": specs.get("disk_total_bytes", 0),
+            "disk_used_bytes": specs.get("disk_used_bytes", 0),
+            "disk_free_bytes": specs.get("disk_free_bytes", 0),
+            "disk_percent": specs.get("disk_percent", 0.0),
             "supported_workloads": specs["supported_workloads"],
             "supported_models": specs.get("supported_models", []),
+            "ollama_status": specs.get("ollama_status", "not_installed"),
+            "last_model_check": specs.get("last_model_check"),
             "gpu_available": specs["gpu_available"],
             "gpu_metadata": specs["gpu_metadata"],
+            "max_concurrent_jobs": self.settings.WEB_SYNC_MAX_CONCURRENT_JOBS,
         }
 
     def _get_token_path(self) -> Path:

@@ -25,7 +25,7 @@ const COMMON_LLM_MODELS = [
 ];
 
 export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalProps) {
-  const { client, workers, refreshJobs, refreshEvents } = useCluster();
+  const { client, workers, refreshWorkers, refreshJobs, refreshEvents } = useCluster();
 
   const [jobType, setJobType] = useState<ApprovedJobType>('matrix_multiply');
   const [name, setName] = useState<string>('Matrix Multiplication Benchmark');
@@ -37,6 +37,7 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
   // Workload specific inputs
   const [matrixDim, setMatrixDim] = useState<number>(100);
   const [dataRecords, setDataRecords] = useState<number>(5000);
+  const [partitions, setPartitions] = useState<number>(2);
   const [customJson, setCustomJson] = useState<string>('');
   const [useCustomJson, setUseCustomJson] = useState<boolean>(false);
 
@@ -58,20 +59,54 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
     );
   }, [workers]);
 
+  // Discovered models actually installed across active workers
+  const installedClusterModels = useMemo(() => {
+    return Array.from(
+      new Set(activeWorkers.flatMap((w) => w.supported_models || []))
+    );
+  }, [activeWorkers]);
+
   // Determine available models for the selected worker or cluster
   const availableModels = useMemo(() => {
     if (targetWorkerId) {
       const target = activeWorkers.find((w) => w.worker_id === targetWorkerId);
-      if (target?.supported_models && target.supported_models.length > 0) {
-        return target.supported_models;
-      }
+      return target?.supported_models || [];
     }
-    // Union across all active workers
-    const discovered = Array.from(
-      new Set(activeWorkers.flatMap((w) => w.supported_models || []))
-    );
-    return discovered.length > 0 ? discovered : COMMON_LLM_MODELS;
-  }, [targetWorkerId, activeWorkers]);
+    return installedClusterModels;
+  }, [targetWorkerId, activeWorkers, installedClusterModels]);
+
+  const activeModel = selectedModel === 'custom' ? customModel.trim() : selectedModel.trim();
+  const isModelAvailable = useMemo(() => {
+    if (!activeModel) return false;
+    const req = activeModel.trim().toLowerCase();
+    return availableModels.some((m) => {
+      const inst = m.trim().toLowerCase();
+      if (req === inst) return true;
+      if (!req.includes(':')) {
+        return inst === `${req}:latest` || inst === req;
+      }
+      const instCanonical = inst.includes(':') ? inst : `${inst}:latest`;
+      return req === instCanonical;
+    });
+  }, [activeModel, availableModels]);
+
+  const [pullingInline, setPullingInline] = useState<boolean>(false);
+  const [pullFeedback, setPullFeedback] = useState<string | null>(null);
+
+  const handleQuickPull = async (targetId: string, modelName: string) => {
+    if (!targetId || !modelName) return;
+    setPullingInline(true);
+    setPullFeedback(null);
+    try {
+      const res = await client.pullModel(targetId, modelName);
+      setPullFeedback(res.message);
+      await refreshWorkers();
+    } catch (e) {
+      setPullFeedback(e instanceof Error ? e.message : 'Pull failed');
+    } finally {
+      setPullingInline(false);
+    }
+  };
 
   const handleTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value as ApprovedJobType;
@@ -80,6 +115,8 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
       setName('Matrix Multiplication Benchmark');
     } else if (val === 'data_processing') {
       setName('Batch Data Transform & Aggregation');
+    } else if (val === 'distributed_data_processing') {
+      setName('Distributed Parallel Data Pipeline');
     } else if (val === 'llm_prompt') {
       setName('Remote AI Prompt Execution');
     } else {
@@ -109,6 +146,11 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
           inputPayload = {
             records: Number(dataRecords),
             operations: ['normalize', 'aggregate', 'checksum'],
+          };
+        } else if (jobType === 'distributed_data_processing') {
+          inputPayload = {
+            records_count: Number(dataRecords),
+            partitions: Number(partitions),
           };
         } else if (jobType === 'llm_prompt') {
           if (!promptText.trim()) {
@@ -192,6 +234,7 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
             options={[
               { label: 'matrix_multiply (Distributed Math)', value: 'matrix_multiply' },
               { label: 'data_processing (Data Pipelines)', value: 'data_processing' },
+              { label: 'distributed_data_processing (Parallel Chunked Distribution)', value: 'distributed_data_processing' },
               { label: 'image_processing (Computer Vision)', value: 'image_processing' },
               { label: 'llm_prompt (Remote AI Inference)', value: 'llm_prompt' },
             ]}
@@ -238,11 +281,22 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
                   label="Inference Model"
                   value={selectedModel}
                   onChange={(e) => setSelectedModel(e.target.value)}
-                  options={[
-                    ...availableModels.map((m) => ({ label: m, value: m })),
-                    { label: '✏️ Custom Model Tag...', value: 'custom' },
-                  ]}
-                  helperText="Local Ollama model installed on the remote machine."
+                  options={
+                    availableModels.length > 0
+                      ? [
+                          ...availableModels.map((m) => ({ label: m, value: m })),
+                          { label: '✏️ Custom Model Tag...', value: 'custom' },
+                        ]
+                      : [
+                          { label: '⚠️ No models installed on nodes', value: '' },
+                          { label: '✏️ Custom Model Tag...', value: 'custom' },
+                        ]
+                  }
+                  helperText={
+                    availableModels.length > 0
+                      ? `${availableModels.length} local Ollama model(s) verified on active nodes.`
+                      : 'No models currently installed on active workers. Pull a model below.'
+                  }
                 />
                 {selectedModel === 'custom' && (
                   <Input
@@ -255,6 +309,49 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
                 )}
               </div>
             </div>
+
+            {/* Model Unavailability Warning & 1-Click Install Action */}
+            {activeModel && !isModelAvailable && (
+              <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs space-y-2">
+                <div className="flex items-start space-x-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                  <div>
+                    <span className="font-semibold text-amber-300 block">
+                      Model '{activeModel}' is not installed
+                    </span>
+                    <span className="text-[11px] text-gray-300">
+                      {targetWorkerId
+                        ? `Target worker '${targetWorkerId}' lacks this model.`
+                        : 'No active cluster worker node currently has this model downloaded in local Ollama.'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1 border-t border-amber-500/20">
+                  <span className="text-[11px] text-gray-400">
+                    Pull '{activeModel}' onto{' '}
+                    {targetWorkerId ? targetWorkerId : activeWorkers[0]?.display_name || 'node'}:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleQuickPull(
+                        targetWorkerId || activeWorkers[0]?.worker_id || '',
+                        activeModel
+                      )
+                    }
+                    disabled={pullingInline || (!targetWorkerId && activeWorkers.length === 0)}
+                    className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white rounded text-[11px] font-medium transition-colors shrink-0"
+                  >
+                    {pullingInline ? 'Pulling Model...' : `Install on ${targetWorkerId || activeWorkers[0]?.display_name || 'Node'}`}
+                  </button>
+                </div>
+
+                {pullFeedback && (
+                  <p className="text-[11px] font-mono text-emerald-300 pt-1">{pullFeedback}</p>
+                )}
+              </div>
+            )}
 
             {/* Prompt Textarea */}
             <div className="space-y-1">
@@ -340,6 +437,28 @@ export function SubmitJobModal({ isOpen, onClose, onSuccess }: SubmitJobModalPro
                     onChange={(e) => setDataRecords(Number(e.target.value))}
                     helperText="Simulates data extraction, normalization, and statistical summary."
                   />
+                )}
+                {jobType === 'distributed_data_processing' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Input
+                      label="Dataset Record Count"
+                      type="number"
+                      min={100}
+                      max={50000}
+                      value={dataRecords}
+                      onChange={(e) => setDataRecords(Number(e.target.value))}
+                      helperText="Total dataset to partition across available workers."
+                    />
+                    <Input
+                      label="Number of Partitions (Parallel Chunks)"
+                      type="number"
+                      min={2}
+                      max={16}
+                      value={partitions}
+                      onChange={(e) => setPartitions(Number(e.target.value))}
+                      helperText="Decomposed subtasks executed concurrently across nodes."
+                    />
+                  </div>
                 )}
                 {jobType === 'image_processing' && (
                   <p className="text-xs text-gray-400">

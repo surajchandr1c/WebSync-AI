@@ -22,6 +22,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   XCircle,
+  Bot,
 } from 'lucide-react';
 
 export default function WorkersPage() {
@@ -183,6 +184,15 @@ export default function WorkersPage() {
           {filteredWorkers.map((worker) => {
             const totalRamGb = (worker.total_ram_bytes / (1024 * 1024 * 1024)).toFixed(1);
             const availRamGb = (worker.available_ram_bytes / (1024 * 1024 * 1024)).toFixed(1);
+            const websyncAvailRamGb = worker.websync_available_ram_bytes
+              ? (worker.websync_available_ram_bytes / (1024 * 1024 * 1024)).toFixed(1)
+              : availRamGb;
+            const diskFreeGb = worker.disk_free_bytes
+              ? (worker.disk_free_bytes / (1024 * 1024 * 1024)).toFixed(1)
+              : null;
+            const diskTotalGb = worker.disk_total_bytes
+              ? (worker.disk_total_bytes / (1024 * 1024 * 1024)).toFixed(1)
+              : null;
             const ramUsagePercent =
               worker.total_ram_bytes > 0
                 ? Math.round(
@@ -238,7 +248,7 @@ export default function WorkersPage() {
                       <div className="flex items-center justify-between text-[11px] text-gray-300 mb-1">
                         <span className="flex items-center space-x-1">
                           <Cpu className="w-3.5 h-3.5 text-blue-400" />
-                          <span>CPU</span>
+                          <span>CPU ({worker.cpu_count_logical || '—'} cores)</span>
                         </span>
                         <span className="font-mono font-semibold text-white">
                           {worker.cpu_utilization.toFixed(1)}%
@@ -265,10 +275,10 @@ export default function WorkersPage() {
                       <div className="flex items-center justify-between text-[11px] text-gray-300 mb-1">
                         <span className="flex items-center space-x-1">
                           <HardDrive className="w-3.5 h-3.5 text-indigo-400" />
-                          <span>RAM</span>
+                          <span>RAM (WebSync: {websyncAvailRamGb} GB free)</span>
                         </span>
                         <span className="font-mono font-semibold text-white">
-                          {availRamGb} GB free / {totalRamGb} GB
+                          {availRamGb} / {totalRamGb} GB
                         </span>
                       </div>
                       <div className="w-full bg-gray-800 h-1.5 rounded-full overflow-hidden">
@@ -278,6 +288,19 @@ export default function WorkersPage() {
                         />
                       </div>
                     </div>
+
+                    {/* Disk Storage (Physical Local Storage) */}
+                    {diskTotalGb && (
+                      <div className="flex items-center justify-between text-[11px] text-gray-400 pt-0.5">
+                        <span className="flex items-center space-x-1">
+                          <HardDrive className="w-3 h-3 text-emerald-400" />
+                          <span>Local Disk</span>
+                        </span>
+                        <span className="font-mono text-gray-300">
+                          {diskFreeGb} GB free / {diskTotalGb} GB ({worker.disk_percent ?? 0}%)
+                        </span>
+                      </div>
+                    )}
 
                     {/* GPU & Concurrency */}
                     <div className="flex items-center justify-between pt-1 text-[11px] text-gray-400">
@@ -298,6 +321,35 @@ export default function WorkersPage() {
                         Jobs: <strong className="text-white">{worker.active_job_count}</strong> /{' '}
                         {worker.max_concurrent_jobs}
                       </span>
+                    </div>
+
+                    {/* Local Ollama Runtime Status */}
+                    <div className="flex items-center justify-between text-[11px] text-gray-400 pt-0.5">
+                      <span className="flex items-center space-x-1">
+                        <Bot
+                          className={`w-3.5 h-3.5 ${
+                            worker.ollama_status === 'ready'
+                              ? 'text-emerald-400'
+                              : worker.ollama_status === 'stopped'
+                              ? 'text-amber-400'
+                              : 'text-gray-500'
+                          }`}
+                        />
+                        <span>
+                          {worker.ollama_status === 'ready'
+                            ? `Ollama: ${worker.supported_models?.length || 0} local models`
+                            : `Ollama: ${(worker.ollama_status || 'not_installed').replace('_', ' ')}`}
+                        </span>
+                      </span>
+
+                      {worker.supported_models && worker.supported_models.length > 0 ? (
+                        <span className="font-mono text-emerald-400 text-[10px]">
+                          {worker.supported_models[0].split(':')[0]}
+                          {worker.supported_models.length > 1 ? ` +${worker.supported_models.length - 1}` : ''}
+                        </span>
+                      ) : (
+                        <span className="text-gray-600 text-[10px]">no models</span>
+                      )}
                     </div>
                   </div>
                 </div>

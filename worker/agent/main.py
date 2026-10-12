@@ -186,6 +186,14 @@ def main():
         dest="worker_name",
         help="Override worker node display name",
     )
+    parser.add_argument(
+        "--token",
+        "--worker-token",
+        type=str,
+        default=None,
+        dest="worker_token",
+        help="Override worker enrollment authentication token",
+    )
     args = parser.parse_args()
 
     if args.inspect:
@@ -199,6 +207,8 @@ def main():
         settings.WEB_SYNC_WORKER_ID = args.worker_id
     if args.worker_name:
         settings.WEB_SYNC_WORKER_NAME = args.worker_name
+    if args.worker_token:
+        settings.WEB_SYNC_WORKER_TOKEN = args.worker_token
 
     daemon = WorkerDaemon(settings)
 

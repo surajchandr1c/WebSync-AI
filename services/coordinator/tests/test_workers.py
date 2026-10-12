@@ -68,9 +68,10 @@ async def test_worker_duplicate_id_conflict(client: httpx.AsyncClient):
     res1 = await client.post("/api/v1/workers/register", json=payload, headers=headers)
     assert res1.status_code == 201
 
-    # Second registration with same ID
+    # Second registration with same ID enables seamless re-enrollment
     res2 = await client.post("/api/v1/workers/register", json=payload, headers=headers)
-    assert res2.status_code == 409
+    assert res2.status_code == 201
+    assert res2.json()["worker_id"] == "node-dup"
 
 
 @pytest.mark.asyncio

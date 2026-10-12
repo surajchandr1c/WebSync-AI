@@ -199,7 +199,9 @@ export default function JobsPage() {
               <option value="all">All Workload Types</option>
               <option value="matrix_multiply">matrix_multiply</option>
               <option value="data_processing">data_processing</option>
+              <option value="distributed_data_processing">distributed_data_processing</option>
               <option value="image_processing">image_processing</option>
+              <option value="llm_prompt">llm_prompt</option>
             </select>
           </div>
         </div>
@@ -249,7 +251,19 @@ export default function JobsPage() {
                     >
                       {/* Name & ID */}
                       <td className="py-3 px-4">
-                        <div className="font-semibold text-white">{job.name}</div>
+                        <div className="flex items-center space-x-2">
+                          <span className="font-semibold text-white">{job.name}</span>
+                          {job.parent_job_id && (
+                            <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-purple-950/60 text-purple-300 border border-purple-800/40">
+                              Subtask
+                            </span>
+                          )}
+                          {job.child_count != null && job.child_count > 0 && (
+                            <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-cyan-950/60 text-cyan-300 border border-cyan-800/40">
+                              {job.child_count} Chunks
+                            </span>
+                          )}
+                        </div>
                         <div className="flex items-center space-x-1.5 text-[10px] text-gray-400 font-mono mt-0.5">
                           <span>{job.job_id.slice(0, 8)}...</span>
                           <button
@@ -268,7 +282,13 @@ export default function JobsPage() {
 
                       {/* Workload */}
                       <td className="py-3 px-4">
-                        <span className="font-mono text-blue-400 px-2 py-0.5 rounded bg-blue-950/40 border border-blue-900/40">
+                        <span className={`font-mono px-2 py-0.5 rounded text-[11px] border ${
+                          job.job_type === 'distributed_data_processing'
+                            ? 'text-cyan-400 bg-cyan-950/40 border-cyan-900/40'
+                            : job.job_type === 'llm_prompt'
+                            ? 'text-indigo-400 bg-indigo-950/40 border-indigo-900/40'
+                            : 'text-blue-400 bg-blue-950/40 border-blue-900/40'
+                        }`}>
                           {job.job_type}
                         </span>
                       </td>

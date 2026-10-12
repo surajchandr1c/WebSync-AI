@@ -183,6 +183,9 @@ class WorkerWebSocketClient:
             elif msg_type == "job.cancel":
                 # Handle remote cancellation
                 asyncio.create_task(self._handle_job_cancel(job_id, payload))
+            elif msg_type == "model.pull":
+                # Handle remote model installation/pull
+                asyncio.create_task(self._handle_model_pull(data))
             elif msg_type == "protocol.error":
                 logger.warning("Coordinator returned protocol error: %s", payload.get("message") or data)
             else:
@@ -286,6 +289,62 @@ class WorkerWebSocketClient:
                 correlation_id=corr_id,
             )
             return
+
+        # 4.5. Check LLM prompt model availability & active download status
+        if job_type == "llm_prompt":
+            from worker.agent.pull_manager import is_model_pulling
+            from worker.agent.capabilities import detect_ollama_status, model_matches
+
+            model_name = input_payload.get("model")
+            if not model_name or not isinstance(model_name, str) or not model_name.strip():
+                rejection_reason = "LLM workload payload missing required 'model' parameter."
+                logger.warning("Rejecting job '%s': %s", job_id, rejection_reason)
+                await self.send_envelope(
+                    msg_type="job.ack",
+                    payload={"job_id": job_id, "accepted": False, "rejection_reason": rejection_reason},
+                    job_id=job_id,
+                    correlation_id=corr_id,
+                )
+                return
+
+            req_model = model_name.strip()
+            if is_model_pulling(req_model):
+                rejection_reason = f"Model '{req_model}' is currently downloading on this node (in-progress). Try again after download completes."
+                logger.warning("Rejecting job '%s': %s", job_id, rejection_reason)
+                await self.send_envelope(
+                    msg_type="job.ack",
+                    payload={"job_id": job_id, "accepted": False, "rejection_reason": rejection_reason},
+                    job_id=job_id,
+                    correlation_id=corr_id,
+                )
+                return
+
+            ollama_status_data = detect_ollama_status()
+            if ollama_status_data["status"] in ("stopped", "not_installed", "unreachable"):
+                rejection_reason = f"Ollama service is {ollama_status_data['status']} on this node. Ensure 'ollama serve' is running."
+                logger.warning("Rejecting job '%s': %s", job_id, rejection_reason)
+                await self.send_envelope(
+                    msg_type="job.ack",
+                    payload={"job_id": job_id, "accepted": False, "rejection_reason": rejection_reason},
+                    job_id=job_id,
+                    correlation_id=corr_id,
+                )
+                return
+
+            installed = ollama_status_data.get("installed_models", [])
+            if not any(model_matches(req_model, m) for m in installed):
+                rejection_reason = (
+                    f"Model '{req_model}' is not installed in local Ollama on this node (installed: {installed}). "
+                    f"Pull model with 'ollama pull {req_model}' or via dashboard."
+                )
+                logger.warning("Rejecting job '%s': %s", job_id, rejection_reason)
+                await self.send_envelope(
+                    msg_type="job.ack",
+                    payload={"job_id": job_id, "accepted": False, "rejection_reason": rejection_reason},
+                    job_id=job_id,
+                    correlation_id=corr_id,
+                )
+                return
 
         # 5. Verify concurrency
         active_count = self.executor.get_active_jobs_count()
@@ -405,6 +464,41 @@ class WorkerWebSocketClient:
                 payload={"job_id": target_job_id, "success": True},
                 job_id=target_job_id,
             )
+
+    async def _handle_model_pull(self, data: Dict[str, Any]) -> None:
+        """Handle incoming model pull request from coordinator."""
+        payload = data.get("payload") or {}
+        model_name = data.get("model") or payload.get("model")
+        corr_id = data.get("correlation_id")
+
+        if not model_name:
+            logger.warning("Received model.pull without model name: %s", data)
+            return
+
+        from worker.agent.pull_manager import execute_model_pull
+
+        def on_progress(info: Dict[str, Any]):
+            asyncio.create_task(
+                self.send_envelope(
+                    msg_type="model.pull_progress",
+                    payload=info,
+                    correlation_id=corr_id,
+                )
+            )
+
+        res = await execute_model_pull(model_name, progress_callback=on_progress)
+        is_ok = res.get("status") in ("completed", "already_installed")
+        await self.send_envelope(
+            msg_type="model.pull_completed" if is_ok else "model.pull_failed",
+            payload=res,
+            correlation_id=corr_id,
+        )
+
+        # Send updated heartbeat immediately so coordinator stores new installed models
+        from worker.agent.metrics import sample_system_metrics
+        active_jobs = self.executor.get_active_jobs_count()
+        metrics = sample_system_metrics(active_jobs_count=active_jobs)
+        await self.send_heartbeat(metrics)
 
     async def send_heartbeat(self, metrics_payload: Dict[str, Any]) -> bool:
         """Send real-time telemetry heartbeat over WebSocket."""

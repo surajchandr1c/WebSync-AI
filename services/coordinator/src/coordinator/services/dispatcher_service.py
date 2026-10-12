@@ -28,11 +28,30 @@ class DispatcherService:
 
         worker, decision, rejections = await scheduler_engine.evaluate_and_select_worker(db, job)
         if not worker or not decision:
+            # Check if this is an LLM job where model is missing on active workers
+            req_model = (job.requirements or {}).get("model") or (job.input_payload or {}).get("model")
+            model_missing_everywhere = False
+            guidance = None
+            if job.job_type == "llm_prompt" and req_model and rejections:
+                model_missing_everywhere = any(
+                    "not installed" in r.lower() or "ollama service is" in r.lower()
+                    for r in rejections.values()
+                )
+                if model_missing_everywhere:
+                    guidance = (
+                        f"Model '{req_model}' is not installed on any active worker node. "
+                        f"Please install it using the dashboard 'Install Model' button on an active node "
+                        f"or run 'ollama pull {req_model}' on the target worker node."
+                    )
+
             # Record why the job remained in QUEUED state for observability
             job.placement_reason = {
                 "decision": "unassigned",
                 "evaluated_at": datetime.now(timezone.utc).isoformat(),
+                "model_missing": model_missing_everywhere,
+                "requested_model": req_model if job.job_type == "llm_prompt" else None,
                 "rejections": rejections,
+                "guidance": guidance,
             }
             await db.commit()
             return False
@@ -231,8 +250,8 @@ class DispatcherService:
             broadcast_event = "job.failed"
             logger.warning("Job '%s' failed on worker '%s' with exit code %d: %s", job_id, worker_id, exit_code, job.result_error)
 
-        # Release capacity
-        await scheduler_engine.release_capacity(db, worker_id)
+        # Release capacity and in-flight reservation ledger entry
+        await scheduler_engine.release_capacity(db, worker_id, job.job_id)
 
         event = JobEvent(
             job_id=job.job_id,
@@ -256,3 +275,8 @@ class DispatcherService:
                 "exit_code": exit_code,
             },
         )
+
+        # If this was a distributed subtask, evaluate parent job completion and aggregate
+        if job.parent_job_id:
+            from coordinator.services.job_service import JobService
+            await JobService.check_and_aggregate_parent_job(db, job.parent_job_id)

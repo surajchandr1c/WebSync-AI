@@ -19,6 +19,10 @@ import {
   Copy,
   Check,
   AlertCircle,
+  Layers,
+  Network,
+  Share2,
+  Database,
 } from 'lucide-react';
 
 interface JobResultModalProps {
@@ -28,17 +32,51 @@ interface JobResultModalProps {
 }
 
 export function JobResultModal({ job, isOpen, onClose }: JobResultModalProps) {
-  const { client, refreshJobs, refreshEvents } = useCluster();
+  const { client, workers, refreshJobs, refreshEvents, refreshWorkers } = useCluster();
   const [result, setResult] = useState<JobResultResponse | null>(null);
   const [events, setEvents] = useState<JobEventResponse[]>([]);
+  const [subtasks, setSubtasks] = useState<JobResponse[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [cancelling, setCancelling] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
+  const [installingModel, setInstallingModel] = useState<boolean>(false);
+  const [installSuccess, setInstallSuccess] = useState<string | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
+
+  const handleInstallMissingModel = async () => {
+    if (!job) return;
+    const targetModel =
+      (job.input_payload as any)?.model ||
+      job.placement_reason?.requested_model ||
+      job.requirements?.model;
+    const targetWorker =
+      job.assigned_worker_id ||
+      workers.find((w) => w.connection_status === 'online' || w.connection_status === 'busy')?.worker_id;
+
+    if (!targetModel || !targetWorker) {
+      setInstallError('No eligible online worker found to receive the model download.');
+      return;
+    }
+
+    setInstallingModel(true);
+    setInstallSuccess(null);
+    setInstallError(null);
+    try {
+      const res = await client.pullModel(targetWorker, targetModel);
+      setInstallSuccess(res.message);
+      await refreshWorkers();
+    } catch (e) {
+      setInstallError(e instanceof Error ? e.message : 'Model installation failed');
+    } finally {
+      setInstallingModel(false);
+    }
+  };
 
   useEffect(() => {
     if (!isOpen || !job) {
       setResult(null);
       setEvents([]);
+      setSubtasks([]);
       setCopied(false);
       return;
     }
@@ -55,6 +93,19 @@ export function JobResultModal({ job, isOpen, onClose }: JobResultModalProps) {
             if (isSubscribed) setResult(res);
           } catch (e) {
             console.debug('Result not yet ready:', e);
+          }
+        }
+
+        // Fetch decomposed subtasks if distributed parent job
+        if (
+          (job.child_count != null && job.child_count > 0) ||
+          job.job_type === 'distributed_data_processing'
+        ) {
+          try {
+            const subs = await client.getJobSubtasks(job.job_id);
+            if (isSubscribed) setSubtasks(subs);
+          } catch (e) {
+            console.debug('Failed to load subtasks:', e);
           }
         }
 
@@ -90,6 +141,49 @@ export function JobResultModal({ job, isOpen, onClose }: JobResultModalProps) {
           eval_duration_ms?: number;
           total_duration_ms?: number;
           done?: boolean;
+        };
+      }
+    } catch {
+      // not JSON
+    }
+    return null;
+  }, [result?.result_output]);
+
+  // Parse structured distributed execution output if present
+  const distributedOutput = useMemo(() => {
+    if (!result?.result_output) return null;
+    try {
+      const parsed = JSON.parse(result.result_output);
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        parsed.execution_mode === 'genuine_distributed_parallel'
+      ) {
+        return parsed as {
+          status: string;
+          execution_mode: string;
+          total_partitions: number;
+          completed_partitions: number;
+          total_records: number;
+          global_sum: number;
+          global_mean: number;
+          global_min: number;
+          global_max: number;
+          executing_workers: string[];
+          worker_count: number;
+          wall_clock_duration_seconds: number;
+          partitions: Array<{
+            subtask_job_id: string;
+            partition_index: number;
+            worker_id: string;
+            record_count: number;
+            partition_sum: number;
+            partition_mean: number;
+            partition_min: number;
+            partition_max: number;
+            duration_seconds: number;
+          }>;
+          summary: string;
         };
       }
     } catch {
@@ -217,6 +311,31 @@ export function JobResultModal({ job, isOpen, onClose }: JobResultModalProps) {
                 Candidate Score: {job.placement_reason.selected_score.toFixed(4)}
               </div>
             )}
+            {job.placement_reason.guidance && (
+              <div className="p-2.5 bg-amber-950/40 border border-amber-900/50 rounded text-amber-200 text-[11px] mt-1.5 space-y-1.5">
+                <p className="leading-relaxed">{job.placement_reason.guidance}</p>
+                <div className="pt-1 flex items-center space-x-2">
+                  <Button
+                    type="button"
+                    variant="primary"
+                    size="sm"
+                    onClick={handleInstallMissingModel}
+                    disabled={installingModel}
+                    className="text-xs bg-amber-600 hover:bg-amber-500 text-white"
+                  >
+                    {installingModel
+                      ? 'Installing...'
+                      : `Install '${job.placement_reason.requested_model || 'Model'}' on Available Node`}
+                  </Button>
+                  {installSuccess && (
+                    <span className="text-[11px] font-mono text-emerald-400">✓ {installSuccess}</span>
+                  )}
+                  {installError && (
+                    <span className="text-[11px] font-mono text-rose-400">✗ {installError}</span>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -300,15 +419,172 @@ export function JobResultModal({ job, isOpen, onClose }: JobResultModalProps) {
                   {result.result_error}
                 </p>
                 {result.result_error.toLowerCase().includes('ollama') && (
-                  <div className="p-2 bg-amber-950/30 border border-amber-900/40 rounded text-[11px] text-amber-200 space-y-1">
+                  <div className="p-2.5 bg-amber-950/30 border border-amber-900/40 rounded text-[11px] text-amber-200 space-y-2">
                     <div className="font-semibold">Troubleshooting Steps:</div>
                     <ul className="list-disc list-inside space-y-0.5 text-amber-300/90">
                       <li>Make sure Ollama is installed on the worker PC (https://ollama.com).</li>
                       <li>Run <code className="bg-black/40 px-1 py-0.5 rounded font-mono">ollama serve</code> to start the local inference server.</li>
                       <li>Pull the model with <code className="bg-black/40 px-1 py-0.5 rounded font-mono">ollama pull {(job.input_payload as any)?.model || 'llama3.2:latest'}</code>.</li>
                     </ul>
+
+                    {/* 1-Click Install Action */}
+                    <div className="flex items-center justify-between pt-1.5 border-t border-amber-900/40">
+                      <span className="text-[11px] text-amber-300">
+                        Download model directly to target node:
+                      </span>
+                      <Button
+                        type="button"
+                        variant="primary"
+                        size="sm"
+                        onClick={handleInstallMissingModel}
+                        disabled={installingModel}
+                        className="text-xs bg-amber-600 hover:bg-amber-500 text-white shrink-0"
+                      >
+                        {installingModel
+                          ? 'Triggering Download...'
+                          : `1-Click Install '${(job.input_payload as any)?.model || 'Model'}'`}
+                      </Button>
+                    </div>
+
+                    {installSuccess && (
+                      <p className="text-[11px] font-mono text-emerald-300 pt-1">
+                        ✓ {installSuccess}
+                      </p>
+                    )}
+                    {installError && (
+                      <p className="text-[11px] font-mono text-rose-300 pt-1">
+                        ✗ {installError}
+                      </p>
+                    )}
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Dedicated Distributed Parallel Computing Card */}
+        {(job.job_type === 'distributed_data_processing' || distributedOutput || subtasks.length > 0) && (
+          <div className="rounded-lg border border-cyan-900/50 bg-[#09121f] p-4 space-y-4">
+            <div className="flex items-center justify-between border-b border-[#1f2937] pb-2.5">
+              <div className="flex items-center space-x-2 text-cyan-300 font-semibold text-xs">
+                <Network className="w-4 h-4 text-cyan-400" />
+                <span>Distributed Parallel Execution & Decomposition</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <span className="text-[11px] font-mono bg-cyan-950/60 text-cyan-300 px-2.5 py-0.5 rounded border border-cyan-800/50">
+                  {distributedOutput?.worker_count ?? (subtasks.length > 0 ? Array.from(new Set(subtasks.map(s => s.assigned_worker_id).filter(Boolean))).length : 0)} Node(s) Engaged
+                </span>
+                <span className="text-[11px] font-mono text-emerald-400 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-900/40">
+                  {distributedOutput?.completed_partitions ?? subtasks.filter(s => s.status === 'COMPLETED').length} / {distributedOutput?.total_partitions ?? subtasks.length} Chunks Complete
+                </span>
+                {distributedOutput?.wall_clock_duration_seconds != null && (
+                  <span className="text-[11px] font-mono text-gray-300 bg-gray-800/40 px-2 py-0.5 rounded border border-gray-700/40">
+                    {distributedOutput.wall_clock_duration_seconds}s
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Executing Workers Nodes */}
+            <div className="space-y-1.5">
+              <span className="text-[11px] uppercase font-semibold text-gray-400 tracking-wider">
+                Contributing Worker Hardware
+              </span>
+              <div className="flex flex-wrap gap-2">
+                {(distributedOutput?.executing_workers || Array.from(new Set(subtasks.map(s => s.assigned_worker_id).filter(Boolean)))).length > 0 ? (
+                  (distributedOutput?.executing_workers || Array.from(new Set(subtasks.map(s => s.assigned_worker_id).filter(Boolean)))).map((wid) => (
+                    <div
+                      key={wid as string}
+                      className="flex items-center space-x-1.5 text-xs font-mono bg-[#0c1829] border border-cyan-800/50 px-2.5 py-1 rounded text-cyan-200"
+                    >
+                      <Server className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>{wid as string}</span>
+                    </div>
+                  ))
+                ) : (
+                  <span className="text-xs text-gray-500 italic">Assigning partition subtasks...</span>
+                )}
+              </div>
+            </div>
+
+            {/* Aggregated Statistical Metrics */}
+            {distributedOutput && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 bg-[#070d17] p-3 rounded-lg border border-[#1a2333] text-xs">
+                <div>
+                  <span className="text-gray-400 block text-[10px]">Total Records</span>
+                  <span className="font-mono font-bold text-white text-sm">
+                    {distributedOutput.total_records.toLocaleString()}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400 block text-[10px]">Global Sum</span>
+                  <span className="font-mono font-bold text-cyan-300 text-sm">
+                    {distributedOutput.global_sum.toLocaleString()}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400 block text-[10px]">Global Mean</span>
+                  <span className="font-mono font-bold text-emerald-300 text-sm">
+                    {distributedOutput.global_mean.toLocaleString()}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400 block text-[10px]">Min / Max Bounds</span>
+                  <span className="font-mono text-gray-300 text-xs">
+                    {distributedOutput.global_min} / {distributedOutput.global_max}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Subtasks / Partitions Breakdown Table */}
+            {subtasks.length > 0 && (
+              <div className="space-y-2 pt-1">
+                <span className="text-[11px] uppercase font-semibold text-gray-400 tracking-wider block">
+                  Decomposed Parallel Tasks ({subtasks.length} Partitions)
+                </span>
+                <div className="overflow-x-auto rounded border border-[#1f2937]">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#0b101a] text-gray-400 uppercase text-[10px] tracking-wider font-semibold border-b border-[#1f2937]">
+                      <tr>
+                        <th className="py-2 px-3">Subtask ID & Chunk</th>
+                        <th className="py-2 px-3">Assigned Node</th>
+                        <th className="py-2 px-3">Status</th>
+                        <th className="py-2 px-3 text-right">Duration</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1f2937] text-gray-300 bg-[#070b13]">
+                      {subtasks.map((st) => (
+                        <tr key={st.job_id} className="hover:bg-[#0d1424]">
+                          <td className="py-2 px-3 font-mono text-white">
+                            <div>{st.name}</div>
+                            <div className="text-[10px] text-gray-500">{st.job_id.slice(0, 8)}...</div>
+                          </td>
+                          <td className="py-2 px-3 font-mono text-cyan-300">
+                            {st.assigned_worker_id || <span className="text-gray-500 italic">Scheduling...</span>}
+                          </td>
+                          <td className="py-2 px-3">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                              st.status === 'COMPLETED'
+                                ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/40'
+                                : st.status === 'RUNNING'
+                                ? 'bg-blue-950/60 text-blue-400 border border-blue-800/40'
+                                : 'bg-gray-800 text-gray-300'
+                            }`}>
+                              {st.status}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 text-right font-mono text-gray-300">
+                            {st.completed_at && st.started_at
+                              ? `${((new Date(st.completed_at).getTime() - new Date(st.started_at).getTime()) / 1000).toFixed(2)}s`
+                              : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>

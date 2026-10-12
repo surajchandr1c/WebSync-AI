@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/Button';
 
 const routeTitles: Record<string, string> = {
   '/': 'Overview',
+  '/chat': 'Remote AI Prompt Studio',
   '/workers': 'Workers Management',
   '/jobs': 'Distributed Jobs & Scheduling',
   '/monitor': 'Live Resource Monitor',

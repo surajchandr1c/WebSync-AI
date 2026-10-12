@@ -23,6 +23,7 @@ class Job(Base):
     # Ownership & Assignment
     created_by_user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     assigned_worker_id: Mapped[Optional[str]] = mapped_column(String(128), ForeignKey("workers.worker_id"), nullable=True, index=True)
+    parent_job_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("jobs.job_id"), nullable=True, index=True)
 
     # Payload & Requirements
     input_payload: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
@@ -47,3 +48,4 @@ class Job(Base):
     # Relationships
     assigned_worker = relationship("Worker", back_populates="jobs")
     events = relationship("JobEvent", back_populates="job", cascade="all, delete-orphan")
+    parent_job = relationship("Job", remote_side=[job_id], backref="child_jobs")

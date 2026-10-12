@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple, Dict, Any
 from fastapi import HTTPException, status
@@ -6,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from coordinator.models.job import Job
 from coordinator.models.job_event import JobEvent
 from coordinator.schemas.job import (
+    ApprovedJobType,
     JobCreateRequest,
     JobResponse,
     JobResultResponse,
@@ -20,8 +22,13 @@ from coordinator.services.dispatcher_service import DispatcherService
 from coordinator.config import settings
 
 
-def job_to_response(job: Job) -> JobResponse:
-    """Map ORM Job model to JobResponse schema."""
+def job_to_response(job: Job, child_count: Optional[int] = None) -> JobResponse:
+    """Map ORM Job model to JobResponse schema safely without triggering lazy-load queries."""
+    if child_count is None:
+        if "child_jobs" in job.__dict__ and job.__dict__["child_jobs"]:
+            child_count = len(job.__dict__["child_jobs"])
+        else:
+            child_count = 0
     return JobResponse(
         job_id=job.job_id,
         name=job.name,
@@ -29,6 +36,8 @@ def job_to_response(job: Job) -> JobResponse:
         status=job.status,
         created_by_user_id=job.created_by_user_id,
         assigned_worker_id=job.assigned_worker_id,
+        parent_job_id=getattr(job, "parent_job_id", None),
+        child_count=child_count,
         input_payload=job.input_payload,
         requirements=job.requirements,
         placement_reason=job.placement_reason,
@@ -57,6 +66,119 @@ class JobService:
         now = datetime.now(timezone.utc)
         req_dict = payload.requirements.model_dump() if payload.requirements else {}
 
+        # Handle genuine distributed parallel workload decomposition
+        if payload.job_type == ApprovedJobType.DISTRIBUTED_DATA_PROCESSING.value:
+            records = payload.input_payload.get("records")
+            num_partitions = int(payload.input_payload.get("partitions", 2))
+            if not records:
+                records_count = int(payload.input_payload.get("records_count", 4000))
+                records = [
+                    {
+                        "id": i,
+                        "val": round(((i * 1.7) % 500) + ((i % 11) * 2.3), 2),
+                        "tag": f"batch-{i % 8}",
+                    }
+                    for i in range(records_count)
+                ]
+
+            parent_job = Job(
+                name=payload.name,
+                job_type=payload.job_type,
+                status=JobState.RUNNING.value,
+                created_by_user_id=user_id,
+                input_payload={
+                    **payload.input_payload,
+                    "total_records": len(records),
+                    "partitions": num_partitions,
+                },
+                requirements=req_dict,
+                created_at=now,
+                started_at=now,
+            )
+            db.add(parent_job)
+            await db.flush()
+
+            # Record creation & running events for parent job
+            event_created = JobEvent(
+                job_id=parent_job.job_id,
+                event_type="CREATED",
+                details={"name": parent_job.name, "job_type": parent_job.job_type, "created_by": user_id},
+                created_at=now,
+            )
+            db.add(event_created)
+            event_running = JobEvent(
+                job_id=parent_job.job_id,
+                event_type="RUNNING",
+                details={"orchestrating_partitions": num_partitions},
+                created_at=now,
+            )
+            db.add(event_running)
+
+            # Partition records into deterministic chunks for parallel distribution
+            total_records = len(records)
+            chunk_size = (total_records + num_partitions - 1) // num_partitions
+            child_jobs = []
+            for idx in range(num_partitions):
+                chunk = records[idx * chunk_size : (idx + 1) * chunk_size]
+                if not chunk:
+                    continue
+                child_job = Job(
+                    name=f"{payload.name} (Chunk {idx + 1}/{num_partitions})",
+                    job_type=ApprovedJobType.DATA_PROCESSING.value,
+                    status=JobState.QUEUED.value,
+                    parent_job_id=parent_job.job_id,
+                    created_by_user_id=user_id,
+                    input_payload={
+                        "records": chunk,
+                        "partition_index": idx,
+                        "total_partitions": num_partitions,
+                    },
+                    requirements=req_dict,
+                    created_at=now,
+                )
+                db.add(child_job)
+                child_jobs.append(child_job)
+
+            await db.commit()
+            await db.refresh(parent_job)
+
+            # Broadcast parent created & started
+            await ws_manager.broadcast(
+                "job.created",
+                {
+                    "job_id": parent_job.job_id,
+                    "name": parent_job.name,
+                    "job_type": parent_job.job_type,
+                    "status": parent_job.status,
+                    "child_count": len(child_jobs),
+                },
+            )
+            await ws_manager.broadcast(
+                "job.started",
+                {
+                    "job_id": parent_job.job_id,
+                    "status": parent_job.status,
+                },
+            )
+
+            # Dispatch each child subtask immediately across worker candidates
+            for c_job in child_jobs:
+                await db.refresh(c_job)
+                await ws_manager.broadcast(
+                    "job.created",
+                    {
+                        "job_id": c_job.job_id,
+                        "name": c_job.name,
+                        "job_type": c_job.job_type,
+                        "status": c_job.status,
+                        "parent_job_id": parent_job.job_id,
+                    },
+                )
+                await DispatcherService.try_dispatch_job(db, c_job)
+
+            return job_to_response(parent_job, child_count=len(child_jobs))
+
+        # Standard atomic single-worker job
         job = Job(
             name=payload.name,
             job_type=payload.job_type,
@@ -179,7 +301,7 @@ class JobService:
 
         # Release worker capacity if assigned and dispatch cancel signal to worker
         if job.assigned_worker_id and current_state in (JobState.SCHEDULED, JobState.RUNNING):
-            await scheduler_engine.release_capacity(db, job.assigned_worker_id)
+            await scheduler_engine.release_capacity(db, job.assigned_worker_id, job.job_id)
             await worker_ws_manager.cancel_job_on_worker(job.assigned_worker_id, job.job_id)
 
         now = datetime.now(timezone.utc)
@@ -194,8 +316,31 @@ class JobService:
         )
         db.add(event)
 
+        # If this is a parent job, cascade cancellation to any active child tasks
+        child_stmt = select(Job).where(Job.parent_job_id == job.job_id)
+        children = (await db.execute(child_stmt)).scalars().all()
+        for child in children:
+            if child.status in (JobState.QUEUED.value, JobState.SCHEDULED.value, JobState.RUNNING.value):
+                if child.assigned_worker_id:
+                    await scheduler_engine.release_capacity(db, child.assigned_worker_id, child.job_id)
+                    await worker_ws_manager.cancel_job_on_worker(child.assigned_worker_id, child.job_id)
+                child.status = JobState.CANCELLED.value
+                child.completed_at = now
+                c_event = JobEvent(
+                    job_id=child.job_id,
+                    event_type="CANCELLED",
+                    details={"cancelled_by_parent": job.job_id},
+                    created_at=now,
+                )
+                db.add(c_event)
+                await ws_manager.broadcast("job.cancelled", {"job_id": child.job_id, "status": child.status})
+
         await db.commit()
         await db.refresh(job)
+
+        # If this was a child job that got cancelled, check if parent should update
+        if job.parent_job_id:
+            await JobService.check_and_aggregate_parent_job(db, job.parent_job_id)
 
         # Broadcast update and cancellation
         await ws_manager.broadcast(
@@ -268,7 +413,7 @@ class JobService:
 
             # Release worker capacity if assigned
             if job.assigned_worker_id:
-                await scheduler_engine.release_capacity(db, job.assigned_worker_id)
+                await scheduler_engine.release_capacity(db, job.assigned_worker_id, job.job_id)
 
         if payload.assigned_worker_id:
             job.assigned_worker_id = payload.assigned_worker_id
@@ -304,6 +449,9 @@ class JobService:
                 "worker_id": job.assigned_worker_id,
             },
         )
+
+        if job.parent_job_id and target_state in (JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED):
+            await JobService.check_and_aggregate_parent_job(db, job.parent_job_id)
 
         return job_to_response(job)
 
@@ -473,3 +621,168 @@ class JobService:
             await db.commit()
 
         return timed_out_ids
+
+    @staticmethod
+    async def get_subtasks(
+        db: AsyncSession,
+        job_id: str,
+        requesting_user_id: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> List[JobResponse]:
+        """Retrieve all decomposed child tasks for a distributed parent job."""
+        stmt = select(Job).where(Job.job_id == job_id)
+        parent = (await db.execute(stmt)).scalar_one_or_none()
+        if not parent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Parent job '{job_id}' not found.",
+            )
+        if requesting_user_id and parent.created_by_user_id and not is_admin:
+            if parent.created_by_user_id != requesting_user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You are not authorized to view this job's subtasks.",
+                )
+        child_stmt = select(Job).where(Job.parent_job_id == job_id).order_by(Job.created_at.asc())
+        children = (await db.execute(child_stmt)).scalars().all()
+        return [job_to_response(c) for c in children]
+
+    @staticmethod
+    async def check_and_aggregate_parent_job(db: AsyncSession, parent_job_id: str) -> None:
+        """Inspect all child subtasks of a parent job. When all are terminal, aggregate results."""
+        stmt = select(Job).where(Job.job_id == parent_job_id)
+        parent = (await db.execute(stmt)).scalar_one_or_none()
+        if not parent or parent.status in (JobState.COMPLETED.value, JobState.FAILED.value, JobState.CANCELLED.value):
+            return
+
+        children_stmt = select(Job).where(Job.parent_job_id == parent_job_id)
+        children = (await db.execute(children_stmt)).scalars().all()
+        if not children:
+            return
+
+        now = datetime.now(timezone.utc)
+        any_failed = any(c.status in (JobState.FAILED.value, JobState.CANCELLED.value) for c in children)
+        all_completed = all(c.status == JobState.COMPLETED.value for c in children)
+
+        if any_failed:
+            failed_children = [c for c in children if c.status in (JobState.FAILED.value, JobState.CANCELLED.value)]
+            error_msgs = [f"Subtask {c.name} ({c.job_id}) on worker {c.assigned_worker_id or 'none'}: {c.result_error or c.status}" for c in failed_children]
+            parent.status = JobState.FAILED.value
+            parent.completed_at = now
+            parent.result_exit_code = 1
+            parent.result_error = f"Distributed computation failed: {'; '.join(error_msgs)}"
+            if parent.started_at:
+                start_ref = parent.started_at if parent.started_at.tzinfo else parent.started_at.replace(tzinfo=timezone.utc)
+                parent.result_duration_seconds = max(0.0, (now - start_ref).total_seconds())
+
+            event = JobEvent(
+                job_id=parent.job_id,
+                event_type="FAILED",
+                details={"failed_subtasks": len(failed_children), "total_subtasks": len(children)},
+                created_at=now,
+            )
+            db.add(event)
+            await db.commit()
+            await ws_manager.broadcast("job.failed", {"job_id": parent.job_id, "status": parent.status})
+            return
+
+        if all_completed:
+            total_records = 0
+            global_sum = 0.0
+            min_val = None
+            max_val = None
+            executing_workers = set()
+            partition_details = []
+
+            for c in children:
+                if c.assigned_worker_id:
+                    executing_workers.add(c.assigned_worker_id)
+                c_data = {}
+                if c.result_output:
+                    try:
+                        c_data = json.loads(c.result_output)
+                    except Exception:
+                        pass
+
+                rec_count = c_data.get("record_count", 0)
+                c_sum = c_data.get("sum", 0.0)
+                c_min = c_data.get("min")
+                c_max = c_data.get("max")
+
+                total_records += rec_count
+                global_sum += c_sum
+                if c_min is not None:
+                    min_val = c_min if min_val is None else min(min_val, c_min)
+                if c_max is not None:
+                    max_val = c_max if max_val is None else max(max_val, c_max)
+
+                partition_details.append({
+                    "subtask_job_id": c.job_id,
+                    "partition_index": c_data.get("partition_index"),
+                    "worker_id": c.assigned_worker_id,
+                    "record_count": rec_count,
+                    "partition_sum": c_sum,
+                    "partition_mean": c_data.get("mean"),
+                    "partition_min": c_min,
+                    "partition_max": c_max,
+                    "duration_seconds": c.result_duration_seconds,
+                })
+
+            global_mean = round(global_sum / total_records, 4) if total_records > 0 else 0.0
+            start_ref = parent.started_at or parent.created_at
+            if start_ref.tzinfo is None:
+                start_ref = start_ref.replace(tzinfo=timezone.utc)
+            wall_clock = max(0.0, (now - start_ref).total_seconds())
+            partition_details.sort(key=lambda p: p.get("partition_index") if p.get("partition_index") is not None else 0)
+
+            aggregated_output = {
+                "status": "success",
+                "execution_mode": "genuine_distributed_parallel",
+                "total_partitions": len(children),
+                "completed_partitions": len(children),
+                "total_records": total_records,
+                "global_sum": round(global_sum, 4),
+                "global_mean": global_mean,
+                "global_min": min_val,
+                "global_max": max_val,
+                "executing_workers": list(executing_workers),
+                "worker_count": len(executing_workers),
+                "wall_clock_duration_seconds": round(wall_clock, 3),
+                "partitions": partition_details,
+                "summary": (
+                    f"Distributed execution complete across {len(executing_workers)} worker node(s): "
+                    f"{total_records} records processed across {len(children)} partitions. "
+                    f"Global Sum: {global_sum:.2f}, Mean: {global_mean:.2f}, "
+                    f"Min: {min_val}, Max: {max_val} in {wall_clock:.2f}s."
+                ),
+            }
+
+            parent.status = JobState.COMPLETED.value
+            parent.completed_at = now
+            parent.result_exit_code = 0
+            parent.result_output = json.dumps(aggregated_output, indent=2)
+            parent.result_duration_seconds = round(wall_clock, 3)
+
+            event = JobEvent(
+                job_id=parent.job_id,
+                event_type="COMPLETED",
+                details={
+                    "total_records": total_records,
+                    "workers": list(executing_workers),
+                    "partitions": len(children),
+                    "duration_seconds": round(wall_clock, 3),
+                },
+                created_at=now,
+            )
+            db.add(event)
+            await db.commit()
+
+            await ws_manager.broadcast(
+                "job.completed",
+                {
+                    "job_id": parent.job_id,
+                    "status": parent.status,
+                    "worker_count": len(executing_workers),
+                    "duration_seconds": parent.result_duration_seconds,
+                },
+            )

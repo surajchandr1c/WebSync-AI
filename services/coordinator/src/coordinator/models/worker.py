@@ -21,12 +21,23 @@ class Worker(Base):
 
     # Resource metrics
     cpu_utilization: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    cpu_count_logical: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    cpu_count_physical: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     total_ram_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     available_ram_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    websync_available_ram_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    disk_total_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    disk_used_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    disk_free_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    disk_percent: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    configured_max_cpu_percent: Mapped[float] = mapped_column(Float, default=90.0, nullable=False)
+    configured_min_available_ram_mb: Mapped[int] = mapped_column(Integer, default=512, nullable=False)
 
     # Capabilities
     supported_workloads: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=False)
     supported_models: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=False)
+    ollama_status: Mapped[str] = mapped_column(String(32), default="not_installed", nullable=False)
+    last_model_check: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     gpu_available: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     gpu_metadata: Mapped[List[Dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
 

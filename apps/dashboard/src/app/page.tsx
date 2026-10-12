@@ -24,6 +24,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   XCircle,
+  Sparkles,
 } from 'lucide-react';
 
 export default function OverviewPage() {
@@ -98,6 +99,17 @@ export default function OverviewPage() {
         </div>
 
         <div className="flex items-center space-x-3">
+          <Link href="/chat">
+            <Button
+              variant="secondary"
+              size="sm"
+              className="flex items-center space-x-1.5 border-blue-500/30 text-blue-300 hover:text-white"
+            >
+              <Sparkles className="w-4 h-4 text-blue-400" />
+              <span>AI Chat Studio</span>
+            </Button>
+          </Link>
+
           <Button
             variant="outline"
             size="sm"

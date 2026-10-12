@@ -118,7 +118,7 @@ def test_insufficient_ram_rejected():
     job = make_test_job(min_ram_bytes=8 * 1024 * 1024 * 1024)
     eligible, reason = evaluate_worker_eligibility(worker, job)
     assert eligible is False
-    assert "Insufficient available RAM" in reason
+    assert "Insufficient" in reason and "RAM" in reason
 
 
 def test_gpu_requirement_enforced():

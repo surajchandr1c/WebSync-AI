@@ -17,4 +17,7 @@ dependencies = [
 members = ["services/coordinator", "worker"]
 
 [tool.pytest.ini_options]
-testpaths = ["services/coordinator/tests"]
+testpaths = ["services/coordinator/tests", "worker/tests"]
+pythonpath = ["services/coordinator/src", "."]
+asyncio_mode = "auto"
+timeout = 15

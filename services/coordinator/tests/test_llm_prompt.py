@@ -140,6 +140,7 @@ async def test_scheduler_evaluator_llm_model_matching():
         available_ram_bytes=24 * 1024 * 1024 * 1024,
         supported_workloads=["llm_prompt"],
         supported_models=["llama3.2:latest", "phi3:latest"],
+        ollama_status="ready",
         active_job_count=0,
         max_concurrent_jobs=2,
         connection_status="online",
@@ -148,7 +149,7 @@ async def test_scheduler_evaluator_llm_model_matching():
         is_revoked=False,
     )
 
-    # Job requesting available model
+    # Job requesting available model with canonical tag
     job_match = Job(
         job_id="job-ai-1",
         name="Test Matching Model",
@@ -157,6 +158,18 @@ async def test_scheduler_evaluator_llm_model_matching():
         requirements={"model": "llama3.2:latest"},
     )
     eligible, reason = evaluate_worker_eligibility(worker, job_match)
+    assert eligible is True
+    assert reason is None
+
+    # Job requesting available model without tag (e.g. "llama3.2" matching "llama3.2:latest")
+    job_match_untagged = Job(
+        job_id="job-ai-1b",
+        name="Test Untagged Model Match",
+        job_type="llm_prompt",
+        input_payload={"prompt": "Hi", "model": "llama3.2"},
+        requirements={"model": "llama3.2"},
+    )
+    eligible, reason = evaluate_worker_eligibility(worker, job_match_untagged)
     assert eligible is True
     assert reason is None
 
@@ -170,7 +183,31 @@ async def test_scheduler_evaluator_llm_model_matching():
     )
     eligible, reason = evaluate_worker_eligibility(worker, job_unmatched)
     assert eligible is False
-    assert "Requested model 'mistral:7b' not available" in reason
+    assert "Requested model 'mistral:7b' is not installed in local Ollama" in reason
+    assert "ollama pull mistral:7b" in reason
+
+    # Worker with stopped Ollama service
+    worker_stopped = Worker(
+        worker_id="ollama-rig-stopped",
+        display_name="Stopped Ollama",
+        hostname="stopped-pc",
+        platform="Windows",
+        cpu_utilization=10.0,
+        total_ram_bytes=32 * 1024 * 1024 * 1024,
+        available_ram_bytes=24 * 1024 * 1024 * 1024,
+        supported_workloads=["llm_prompt"],
+        supported_models=["llama3.2:latest"],
+        ollama_status="stopped",
+        active_job_count=0,
+        max_concurrent_jobs=2,
+        connection_status="online",
+        last_heartbeat=now,
+        registered_at=now,
+        is_revoked=False,
+    )
+    eligible, reason = evaluate_worker_eligibility(worker_stopped, job_match)
+    assert eligible is False
+    assert "Ollama service is STOPPED" in reason
 
     # Job requesting target worker ID
     job_targeted = Job(
@@ -183,3 +220,56 @@ async def test_scheduler_evaluator_llm_model_matching():
     eligible, reason = evaluate_worker_eligibility(worker, job_targeted)
     assert eligible is False
     assert "Job targeted worker 'other-worker'" in reason
+
+
+@pytest.mark.asyncio
+async def test_worker_model_pull_endpoint():
+    """Verify worker model pull initiation and input sanitization endpoint."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Register a test worker
+        reg_payload = {
+            "worker_id": "pull-test-worker",
+            "display_name": "Pull Test Node",
+            "hostname": "pull-host",
+            "platform": "Linux",
+            "cpu_utilization": 10.0,
+            "total_ram_bytes": 16 * 1024 * 1024 * 1024,
+            "available_ram_bytes": 12 * 1024 * 1024 * 1024,
+            "supported_workloads": ["llm_prompt"],
+            "supported_models": ["llama3.2:latest"],
+            "ollama_status": "ready",
+        }
+        headers = {"X-Worker-Auth-Token": "test-dev-worker-token"}
+        resp = await client.post("/api/v1/workers/register", json=reg_payload, headers=headers)
+        assert resp.status_code == 201
+
+        # 2. Get models endpoint
+        resp = await client.get("/api/v1/workers/pull-test-worker/models")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ollama_status"] == "ready"
+        assert "llama3.2:latest" in data["installed_models"]
+
+        # 3. Pull an already-installed model
+        resp = await client.post(
+            "/api/v1/workers/pull-test-worker/models/pull",
+            json={"model": "llama3.2"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "already_installed"
+
+        # 4. Pull invalid model name (shell injection attempt)
+        resp = await client.post(
+            "/api/v1/workers/pull-test-worker/models/pull",
+            json={"model": "model; echo pwned"},
+        )
+        assert resp.status_code == 422
+
+        # 5. Pull for non-existent worker
+        resp = await client.post(
+            "/api/v1/workers/nonexistent-worker-xyz/models/pull",
+            json={"model": "mistral"},
+        )
+        assert resp.status_code == 404
+

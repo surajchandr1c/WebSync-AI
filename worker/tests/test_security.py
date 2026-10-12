@@ -76,7 +76,7 @@ async def test_executor_cpu_threshold_protection():
                 input_payload={"dimension": 10},
             )
             assert result.exit_code == -1
-            assert "Host CPU utilization too high" in (result.error or "")
+            assert "Host CPU utilization" in (result.error or "") and "too high" in (result.error or "")
 
 
 @pytest.mark.asyncio

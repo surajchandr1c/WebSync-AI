@@ -9,10 +9,21 @@ export interface WorkerResponse {
   platform: string;
   platform_version: string;
   cpu_utilization: number;
+  cpu_count_logical?: number;
+  cpu_count_physical?: number;
   total_ram_bytes: number;
   available_ram_bytes: number;
+  websync_available_ram_bytes?: number;
+  disk_total_bytes?: number;
+  disk_used_bytes?: number;
+  disk_free_bytes?: number;
+  disk_percent?: number;
+  configured_max_cpu_percent?: number;
+  configured_min_available_ram_mb?: number;
   supported_workloads: string[];
   supported_models?: string[];
+  ollama_status?: 'ready' | 'stopped' | 'unreachable' | 'not_installed';
+  last_model_check?: string | null;
   gpu_available: boolean;
   gpu_metadata: GPUInfo[];
   active_job_count: number;
@@ -58,3 +69,15 @@ export interface WorkerRegistrationResponse {
 
 // Backwards compatibility alias
 export type WorkerSummary = WorkerResponse;
+
+export interface ModelPullRequest {
+  model: string;
+}
+
+export interface ModelPullResponse {
+  status: 'initiated' | 'in_progress' | 'completed' | 'already_installed' | 'failed';
+  worker_id: string;
+  model: string;
+  message: string;
+  progress_percent?: number;
+}

@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from coordinator.db.session import get_db
@@ -78,6 +78,24 @@ async def get_job(
     user_id = current_user.id if current_user else None
     is_admin = (current_user.role == "admin") if current_user else False
     return await JobService.get_job(
+        db=db, job_id=job_id, requesting_user_id=user_id, is_admin=is_admin
+    )
+
+
+@router.get(
+    "/{job_id}/subtasks",
+    response_model=List[JobResponse],
+    summary="Retrieve decomposed child tasks for a distributed parent job",
+)
+async def get_job_subtasks(
+    job_id: str,
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> List[JobResponse]:
+    """Retrieve child chunk tasks spawned by a distributed parallel job."""
+    user_id = current_user.id if current_user else None
+    is_admin = (current_user.role == "admin") if current_user else False
+    return await JobService.get_subtasks(
         db=db, job_id=job_id, requesting_user_id=user_id, is_admin=is_admin
     )
 

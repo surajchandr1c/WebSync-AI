@@ -11,6 +11,7 @@ import {
   ScrollText,
   Settings,
   Radio,
+  Sparkles,
 } from 'lucide-react';
 import { useCluster } from '@/context/ClusterContext';
 
@@ -26,6 +27,11 @@ const navItems: NavItem[] = [
     label: 'Overview',
     href: '/',
     icon: LayoutDashboard,
+  },
+  {
+    label: 'AI Chat Studio',
+    href: '/chat',
+    icon: Sparkles,
   },
   {
     label: 'Workers',

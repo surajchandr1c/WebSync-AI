@@ -37,11 +37,24 @@ class HeartbeatLoop:
 
         return {
             "cpu_utilization": metrics["cpu_utilization"],
+            "cpu_count_logical": metrics.get("cpu_count_logical"),
+            "cpu_count_physical": metrics.get("cpu_count_physical"),
             "available_ram_bytes": metrics["available_ram_bytes"],
             "total_ram_bytes": metrics["total_ram_bytes"],
+            "used_ram_bytes": metrics.get("used_ram_bytes"),
+            "websync_available_ram_bytes": metrics.get("websync_available_ram_bytes"),
+            "disk_total_bytes": metrics.get("disk_total_bytes"),
+            "disk_used_bytes": metrics.get("disk_used_bytes"),
+            "disk_free_bytes": metrics.get("disk_free_bytes"),
+            "disk_percent": metrics.get("disk_percent"),
+            "configured_max_concurrent_jobs": metrics.get("configured_max_concurrent_jobs"),
+            "configured_max_cpu_percent": metrics.get("configured_max_cpu_percent"),
+            "configured_min_available_ram_mb": metrics.get("configured_min_available_ram_mb"),
             "active_job_count": active_jobs,
             "gpu_metadata": metrics["gpu_metadata"],
             "supported_models": metrics.get("supported_models", []),
+            "ollama_status": metrics.get("ollama_status", "not_installed"),
+            "last_model_check": metrics.get("last_model_check"),
         }
 
     async def send_single_heartbeat(self) -> Dict[str, Any]:

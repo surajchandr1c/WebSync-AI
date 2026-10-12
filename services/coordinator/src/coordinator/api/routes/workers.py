@@ -1,3 +1,6 @@
+import re
+import uuid
+from datetime import datetime, timezone
 from typing import Optional, List
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
@@ -13,7 +16,11 @@ from coordinator.schemas.worker import (
     WorkerHeartbeatRequest,
     WorkerResponse,
     WorkerListResponse,
+    ModelPullRequest,
+    ModelPullResponse,
 )
+from coordinator.ws.manager import worker_ws_manager
+from coordinator.scheduler.evaluator import model_matches
 from coordinator.schemas.job import (
     JobDispatchEnvelope,
     JobAckMessage,
@@ -276,4 +283,106 @@ async def submit_job_result(
         error=payload.error,
     )
     return {"status": "ok", "job_id": job_id, "exit_code": payload.exit_code}
+
+
+@router.post(
+    "/{worker_id}/models/pull",
+    response_model=ModelPullResponse,
+    summary="Trigger model download on specific worker node",
+    description="Initiates an explicit, user-approved model pull in the local Ollama instance on the target worker node.",
+)
+async def pull_model_on_worker(
+    worker_id: str,
+    payload: ModelPullRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ModelPullResponse:
+    """Trigger explicit Ollama model download on specified worker node."""
+    stmt = select(Worker).where(Worker.worker_id == worker_id)
+    worker = (await db.execute(stmt)).scalar_one_or_none()
+    if not worker:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Worker node '{worker_id}' not found.",
+        )
+
+    if worker.is_revoked:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Worker node '{worker_id}' has been revoked.",
+        )
+
+    # Validate model identifier to prevent command injection
+    model_regex = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_\-\.:/]{0,127}$")
+    cleaned_model = payload.model.strip()
+    if not model_regex.match(cleaned_model):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid model name '{payload.model}'. Model name may only contain alphanumeric characters, dots, colons, underscores, slashes, and hyphens.",
+        )
+
+    # Check if model is already installed
+    worker_models = worker.supported_models or []
+    if any(model_matches(cleaned_model, m) for m in worker_models):
+        return ModelPullResponse(
+            status="already_installed",
+            worker_id=worker_id,
+            model=cleaned_model,
+            message=f"Model '{cleaned_model}' is already installed on worker '{worker.display_name}'.",
+            progress_percent=100.0,
+        )
+
+    # Check WebSocket connection to worker
+    if not worker_ws_manager.is_worker_connected(worker_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Worker node '{worker_id}' is not currently connected via WebSocket to receive model download commands. Please verify the worker agent is running.",
+        )
+
+    envelope = {
+        "type": "model.pull",
+        "worker_id": worker_id,
+        "model": cleaned_model,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "correlation_id": str(uuid.uuid4()),
+    }
+
+    dispatched = await worker_ws_manager.dispatch_job_to_worker(worker_id, envelope)
+    if not dispatched:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to deliver model pull command to worker '{worker_id}'.",
+        )
+
+    return ModelPullResponse(
+        status="initiated",
+        worker_id=worker_id,
+        model=cleaned_model,
+        message=f"Model pull for '{cleaned_model}' successfully dispatched to worker '{worker.display_name}'.",
+        progress_percent=0.0,
+    )
+
+
+@router.get(
+    "/{worker_id}/models",
+    summary="Get installed Ollama models on worker node",
+)
+async def get_worker_models(
+    worker_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return local Ollama models list and status for worker."""
+    stmt = select(Worker).where(Worker.worker_id == worker_id)
+    worker = (await db.execute(stmt)).scalar_one_or_none()
+    if not worker:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Worker node '{worker_id}' not found.",
+        )
+    return {
+        "worker_id": worker.worker_id,
+        "ollama_status": worker.ollama_status,
+        "supported_models": worker.supported_models or [],
+        "installed_models": worker.supported_models or [],
+        "last_model_check": worker.last_model_check,
+    }
 

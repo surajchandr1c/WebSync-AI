@@ -68,6 +68,14 @@ async def init_db() -> None:
                 await conn.execute(text("ALTER TABLE workers ADD COLUMN supported_models JSON DEFAULT '[]' NOT NULL"))
             except Exception:
                 pass
+            try:
+                await conn.execute(text("ALTER TABLE workers ADD COLUMN ollama_status VARCHAR(32) DEFAULT 'not_installed' NOT NULL"))
+            except Exception:
+                pass
+            try:
+                await conn.execute(text("ALTER TABLE workers ADD COLUMN last_model_check TIMESTAMP WITH TIME ZONE NULL"))
+            except Exception:
+                pass
         try:
             await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_assigned_worker_id ON jobs (assigned_worker_id)"))
             await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_assigned_worker_status ON jobs (assigned_worker_id, status)"))

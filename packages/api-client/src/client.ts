@@ -8,6 +8,7 @@ import {
   JobListResponse,
   JobResultResponse,
   JobEventListResponse,
+  ModelPullResponse,
 } from '@websync/shared-types';
 
 export interface WebSyncClientConfig {
@@ -133,6 +134,16 @@ export class WebSyncClient {
   }
 
   /**
+   * Trigger explicit model pull / install on a worker node.
+   */
+  async pullModel(workerId: string, model: string): Promise<ModelPullResponse> {
+    return this.request<ModelPullResponse>(`/api/v1/workers/${encodeURIComponent(workerId)}/models/pull`, {
+      method: 'POST',
+      body: JSON.stringify({ model }),
+    });
+  }
+
+  /**
    * List computational jobs with optional filtering and pagination.
    */
   async listJobs(params?: ListJobsParams): Promise<JobListResponse> {
@@ -177,6 +188,13 @@ export class WebSyncClient {
    */
   async getJobResult(jobId: string): Promise<JobResultResponse> {
     return this.request<JobResultResponse>(`/api/v1/jobs/${encodeURIComponent(jobId)}/result`);
+  }
+
+  /**
+   * Retrieve decomposed child tasks for a distributed parent job.
+   */
+  async getJobSubtasks(jobId: string): Promise<JobResponse[]> {
+    return this.request<JobResponse[]>(`/api/v1/jobs/${encodeURIComponent(jobId)}/subtasks`);
   }
 
   /**

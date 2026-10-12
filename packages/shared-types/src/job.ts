@@ -1,6 +1,6 @@
 export type JobStatus = 'QUEUED' | 'SCHEDULED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 
-export type ApprovedJobType = 'matrix_multiply' | 'data_processing' | 'image_processing' | 'llm_prompt';
+export type ApprovedJobType = 'matrix_multiply' | 'data_processing' | 'distributed_data_processing' | 'image_processing' | 'llm_prompt';
 
 export interface JobRequirements {
   min_cpu_cores: number;
@@ -26,6 +26,8 @@ export interface JobResponse {
   status: JobStatus;
   created_by_user_id?: string | null;
   assigned_worker_id?: string | null;
+  parent_job_id?: string | null;
+  child_count?: number;
   input_payload: Record<string, any>;
   requirements: Record<string, any>;
   placement_reason?: Record<string, any> | null;

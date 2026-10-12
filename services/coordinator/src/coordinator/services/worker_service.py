@@ -46,10 +46,21 @@ def worker_to_response(worker: Worker) -> WorkerResponse:
         platform=worker.platform,
         platform_version=worker.platform_version,
         cpu_utilization=worker.cpu_utilization,
+        cpu_count_logical=getattr(worker, "cpu_count_logical", 1) or 1,
+        cpu_count_physical=getattr(worker, "cpu_count_physical", 1) or 1,
         total_ram_bytes=worker.total_ram_bytes,
         available_ram_bytes=worker.available_ram_bytes,
+        websync_available_ram_bytes=getattr(worker, "websync_available_ram_bytes", 0) or 0,
+        disk_total_bytes=getattr(worker, "disk_total_bytes", 0) or 0,
+        disk_used_bytes=getattr(worker, "disk_used_bytes", 0) or 0,
+        disk_free_bytes=getattr(worker, "disk_free_bytes", 0) or 0,
+        disk_percent=getattr(worker, "disk_percent", 0.0) or 0.0,
+        configured_max_cpu_percent=getattr(worker, "configured_max_cpu_percent", 90.0) or 90.0,
+        configured_min_available_ram_mb=getattr(worker, "configured_min_available_ram_mb", 512) or 512,
         supported_workloads=worker.supported_workloads,
         supported_models=worker.supported_models or [],
+        ollama_status=getattr(worker, "ollama_status", "not_installed") or "not_installed",
+        last_model_check=getattr(worker, "last_model_check", None),
         gpu_available=worker.gpu_available,
         gpu_metadata=worker.gpu_metadata,
         active_job_count=worker.active_job_count,
@@ -68,44 +79,84 @@ class WorkerService:
     async def register_worker(
         db: AsyncSession, payload: WorkerRegistrationRequest
     ) -> WorkerRegistrationResponse:
-        # Check for unique worker_id
-        stmt = select(Worker).where(Worker.worker_id == payload.worker_id)
-        existing = (await db.execute(stmt)).scalar_one_or_none()
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Worker with ID '{payload.worker_id}' is already registered.",
-            )
-
         now = datetime.now(timezone.utc)
         auth_token = create_access_token(
             subject=payload.worker_id,
             token_type="worker",
         )
 
-        worker = Worker(
-            worker_id=payload.worker_id,
-            display_name=payload.display_name,
-            hostname=payload.hostname,
-            platform=payload.platform,
-            platform_version=payload.platform_version,
-            cpu_utilization=payload.cpu_utilization,
-            total_ram_bytes=payload.total_ram_bytes,
-            available_ram_bytes=payload.available_ram_bytes,
-            supported_workloads=payload.supported_workloads,
-            supported_models=payload.supported_models or [],
-            gpu_available=payload.gpu_available,
-            gpu_metadata=payload.gpu_metadata,
-            active_job_count=0,
-            max_concurrent_jobs=payload.max_concurrent_jobs,
-            connection_status="online",
-            last_heartbeat=now,
-            registered_at=now,
-            auth_token_hash=_hash_token(auth_token),
-            is_revoked=False,
-        )
+        # Check for existing worker_id to support seamless re-enrollment on restart
+        stmt = select(Worker).where(Worker.worker_id == payload.worker_id)
+        worker = (await db.execute(stmt)).scalar_one_or_none()
+        if worker:
+            if worker.is_revoked:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Worker node '{payload.worker_id}' has been revoked.",
+                )
+            # Update existing worker telemetry and auth token
+            worker.display_name = payload.display_name
+            worker.hostname = payload.hostname
+            worker.platform = payload.platform
+            worker.platform_version = payload.platform_version
+            worker.cpu_utilization = payload.cpu_utilization
+            worker.cpu_count_logical = payload.cpu_count_logical
+            worker.cpu_count_physical = payload.cpu_count_physical
+            worker.total_ram_bytes = payload.total_ram_bytes
+            worker.available_ram_bytes = payload.available_ram_bytes
+            worker.websync_available_ram_bytes = payload.websync_available_ram_bytes or payload.available_ram_bytes
+            worker.disk_total_bytes = payload.disk_total_bytes
+            worker.disk_used_bytes = payload.disk_used_bytes
+            worker.disk_free_bytes = payload.disk_free_bytes
+            worker.disk_percent = payload.disk_percent
+            worker.configured_max_cpu_percent = payload.configured_max_cpu_percent
+            worker.configured_min_available_ram_mb = payload.configured_min_available_ram_mb
+            worker.supported_workloads = payload.supported_workloads
+            worker.supported_models = payload.supported_models or []
+            worker.ollama_status = payload.ollama_status
+            worker.last_model_check = payload.last_model_check
+            worker.gpu_available = payload.gpu_available
+            worker.gpu_metadata = payload.gpu_metadata
+            worker.active_job_count = 0
+            worker.max_concurrent_jobs = payload.max_concurrent_jobs
+            worker.connection_status = "online"
+            worker.last_heartbeat = now
+            worker.auth_token_hash = _hash_token(auth_token)
+        else:
+            worker = Worker(
+                worker_id=payload.worker_id,
+                display_name=payload.display_name,
+                hostname=payload.hostname,
+                platform=payload.platform,
+                platform_version=payload.platform_version,
+                cpu_utilization=payload.cpu_utilization,
+                cpu_count_logical=payload.cpu_count_logical,
+                cpu_count_physical=payload.cpu_count_physical,
+                total_ram_bytes=payload.total_ram_bytes,
+                available_ram_bytes=payload.available_ram_bytes,
+                websync_available_ram_bytes=payload.websync_available_ram_bytes or payload.available_ram_bytes,
+                disk_total_bytes=payload.disk_total_bytes,
+                disk_used_bytes=payload.disk_used_bytes,
+                disk_free_bytes=payload.disk_free_bytes,
+                disk_percent=payload.disk_percent,
+                configured_max_cpu_percent=payload.configured_max_cpu_percent,
+                configured_min_available_ram_mb=payload.configured_min_available_ram_mb,
+                supported_workloads=payload.supported_workloads,
+                supported_models=payload.supported_models or [],
+                ollama_status=payload.ollama_status,
+                last_model_check=payload.last_model_check,
+                gpu_available=payload.gpu_available,
+                gpu_metadata=payload.gpu_metadata,
+                active_job_count=0,
+                max_concurrent_jobs=payload.max_concurrent_jobs,
+                connection_status="online",
+                last_heartbeat=now,
+                registered_at=now,
+                auth_token_hash=_hash_token(auth_token),
+                is_revoked=False,
+            )
+            db.add(worker)
 
-        db.add(worker)
         await db.commit()
         await db.refresh(worker)
 
@@ -153,12 +204,35 @@ class WorkerService:
         worker.available_ram_bytes = payload.available_ram_bytes
         if payload.total_ram_bytes is not None:
             worker.total_ram_bytes = payload.total_ram_bytes
+        if payload.cpu_count_logical is not None:
+            worker.cpu_count_logical = payload.cpu_count_logical
+        if payload.cpu_count_physical is not None:
+            worker.cpu_count_physical = payload.cpu_count_physical
+        if payload.websync_available_ram_bytes is not None:
+            worker.websync_available_ram_bytes = payload.websync_available_ram_bytes
+        if payload.disk_total_bytes is not None:
+            worker.disk_total_bytes = payload.disk_total_bytes
+        if payload.disk_used_bytes is not None:
+            worker.disk_used_bytes = payload.disk_used_bytes
+        if payload.disk_free_bytes is not None:
+            worker.disk_free_bytes = payload.disk_free_bytes
+        if payload.disk_percent is not None:
+            worker.disk_percent = payload.disk_percent
+        if payload.configured_max_cpu_percent is not None:
+            worker.configured_max_cpu_percent = payload.configured_max_cpu_percent
+        if payload.configured_min_available_ram_mb is not None:
+            worker.configured_min_available_ram_mb = payload.configured_min_available_ram_mb
+
         worker.active_job_count = payload.active_job_count
         if payload.gpu_metadata is not None:
             worker.gpu_metadata = payload.gpu_metadata
             worker.gpu_available = len(payload.gpu_metadata) > 0
         if payload.supported_models is not None:
             worker.supported_models = payload.supported_models
+        if payload.ollama_status is not None:
+            worker.ollama_status = payload.ollama_status
+        if payload.last_model_check is not None:
+            worker.last_model_check = payload.last_model_check
 
         worker.last_heartbeat = now
         worker.connection_status = "busy" if payload.active_job_count > 0 else "online"
@@ -175,6 +249,8 @@ class WorkerService:
                 "available_ram_bytes": worker.available_ram_bytes,
                 "active_job_count": worker.active_job_count,
                 "status": worker.connection_status,
+                "ollama_status": worker.ollama_status,
+                "supported_models": worker.supported_models,
             },
         )
 

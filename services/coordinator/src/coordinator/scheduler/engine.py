@@ -52,11 +52,58 @@ class SchedulingDecision:
         }
 
 
+class ResourceReservation:
+    """In-flight logical allocation of compute and memory resources."""
+
+    def __init__(
+        self,
+        job_id: str,
+        worker_id: str,
+        reserved_ram_bytes: int = 0,
+        reserved_cpu_cores: int = 1,
+    ):
+        self.job_id = job_id
+        self.worker_id = worker_id
+        self.reserved_ram_bytes = reserved_ram_bytes
+        self.reserved_cpu_cores = reserved_cpu_cores
+        self.reserved_at = datetime.now(timezone.utc)
+
+
 class SchedulerEngine:
     """Core adaptive scheduler engine evaluating, ranking, and assigning distributed jobs."""
 
     def __init__(self, weights: Optional[SchedulerWeights] = None):
         self.weights = weights or default_weights
+        self._reservations: Dict[str, ResourceReservation] = {}
+
+    def get_worker_reserved_ram(self, worker_id: str) -> int:
+        """Sum of in-flight RAM reserved on the given worker node."""
+        return sum(
+            res.reserved_ram_bytes
+            for res in self._reservations.values()
+            if res.worker_id == worker_id
+        )
+
+    def get_worker_reserved_cores(self, worker_id: str) -> int:
+        """Sum of in-flight CPU cores reserved on the given worker node."""
+        return sum(
+            res.reserved_cpu_cores
+            for res in self._reservations.values()
+            if res.worker_id == worker_id
+        )
+
+    def get_reservations_summary(self) -> List[Dict[str, Any]]:
+        """Return structured summary of active logical reservations."""
+        return [
+            {
+                "job_id": res.job_id,
+                "worker_id": res.worker_id,
+                "reserved_ram_bytes": res.reserved_ram_bytes,
+                "reserved_cpu_cores": res.reserved_cpu_cores,
+                "reserved_at": res.reserved_at.isoformat(),
+            }
+            for res in self._reservations.values()
+        ]
 
     async def evaluate_and_select_worker(
         self,
@@ -89,10 +136,14 @@ class SchedulerEngine:
 
         # 2. Capability matching loop
         for worker in all_workers:
+            res_ram = self.get_worker_reserved_ram(worker.worker_id)
+            res_cores = self.get_worker_reserved_cores(worker.worker_id)
             eligible, reason = evaluate_worker_eligibility(
                 worker=worker,
                 job=job,
                 heartbeat_timeout_seconds=hb_timeout,
+                reserved_ram_bytes=res_ram,
+                reserved_cpu_cores=res_cores,
             )
             if not eligible:
                 rejections[worker.worker_id] = reason or "Unknown constraint violation"
@@ -164,10 +215,27 @@ class SchedulerEngine:
                 f"Cannot reserve capacity on worker '{worker.worker_id}': limit reached ({worker.active_job_count}/{max_jobs})"
             )
 
-        # Reserve capacity
+        # Reserve capacity and track in-flight logical allocation
         worker.active_job_count += 1
         if worker.active_job_count >= max_jobs:
             worker.connection_status = "busy"
+
+        # Record logical reservation
+        reqs = job.requirements or {}
+        if "min_ram_bytes" in reqs and reqs["min_ram_bytes"] is not None:
+            req_ram = int(reqs["min_ram_bytes"])
+        elif "min_ram_mb" in reqs and reqs["min_ram_mb"] is not None:
+            req_ram = int(reqs["min_ram_mb"]) * 1024 * 1024
+        else:
+            req_ram = 0
+        req_cores = int(reqs.get("min_cpu_cores", 1))
+
+        self._reservations[job.job_id] = ResourceReservation(
+            job_id=job.job_id,
+            worker_id=worker.worker_id,
+            reserved_ram_bytes=req_ram,
+            reserved_cpu_cores=req_cores,
+        )
 
         # Update job
         job.status = JobState.SCHEDULED.value
@@ -198,8 +266,19 @@ class SchedulerEngine:
             },
         )
 
-    async def release_capacity(self, db: AsyncSession, worker_id: str) -> None:
-        """Release one active job slot from the specified worker node."""
+    async def release_capacity(
+        self, db: AsyncSession, worker_id: str, job_id: Optional[str] = None
+    ) -> None:
+        """Release one active job slot and clear logical resource reservation."""
+        # Clean reservation
+        if job_id and job_id in self._reservations:
+            del self._reservations[job_id]
+        elif worker_id:
+            for jid, res in list(self._reservations.items()):
+                if res.worker_id == worker_id:
+                    del self._reservations[jid]
+                    break
+
         stmt = select(Worker).where(Worker.worker_id == worker_id)
         worker = (await db.execute(stmt)).scalar_one_or_none()
         if worker:
@@ -221,8 +300,15 @@ class SchedulerEngine:
         
         - SCHEDULED jobs: worker never started; re-queue to QUEUED and unassign.
         - RUNNING jobs: failed mid-execution; mark FAILED and log error.
+        - Release all in-flight resource reservations for this worker node.
         """
         now = datetime.now(timezone.utc)
+
+        # Clear in-flight reservations
+        for jid, res in list(self._reservations.items()):
+            if res.worker_id == worker_id:
+                del self._reservations[jid]
+
         stmt = select(Job).where(
             Job.assigned_worker_id == worker_id,
             Job.status.in_([JobState.SCHEDULED.value, JobState.RUNNING.value]),
