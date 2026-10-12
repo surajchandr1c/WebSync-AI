@@ -59,6 +59,12 @@ app.dependency_overrides[get_db] = override_get_db
 
 
 @pytest_asyncio.fixture
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
+    async with TestingSessionLocal() as session:
+        yield session
+
+
+@pytest_asyncio.fixture
 async def client() -> AsyncGenerator[httpx.AsyncClient, None]:
     """Async test client bound to FastAPI application."""
     transport = httpx.ASGITransport(app=app)

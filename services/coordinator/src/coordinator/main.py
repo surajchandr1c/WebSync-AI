@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
+import asyncio
 from coordinator.config import settings
 from coordinator.core.logging_config import setup_coordinator_logging
 from coordinator.db.session import init_db
@@ -12,6 +13,26 @@ from coordinator.api.router import api_router, ws_router
 # Configure structured logging with sensitive token redaction filter
 setup_coordinator_logging(settings.LOG_LEVEL)
 logger = logging.getLogger("coordinator")
+
+
+async def run_cluster_watchdog():
+    """Continuous background loop monitoring stale workers and expired job deadlines."""
+    logger.info("Cluster watchdog background monitor started.")
+    from coordinator.db.session import async_session_factory
+    from coordinator.services.worker_service import WorkerService
+    from coordinator.services.job_service import JobService
+
+    while True:
+        try:
+            await asyncio.sleep(5.0)
+            async with async_session_factory() as db:
+                await WorkerService.check_and_mark_stale_workers(db)
+                await JobService.check_and_fail_timed_out_jobs(db)
+        except asyncio.CancelledError:
+            logger.info("Cluster watchdog monitor stopped.")
+            break
+        except Exception as e:
+            logger.debug("Cluster watchdog iteration warning: %s", str(e))
 
 
 @asynccontextmanager
@@ -33,7 +54,16 @@ async def lifespan(app: FastAPI):
         logger.error("Database schema initialization / startup recovery encountered error: %s", str(e))
 
     logger.info("CORS origins configured: %s", settings.cors_origins)
+
+    watchdog_task = asyncio.create_task(run_cluster_watchdog())
+
     yield
+
+    watchdog_task.cancel()
+    try:
+        await watchdog_task
+    except asyncio.CancelledError:
+        pass
     logger.info("Shutting down WebSync AI Coordinator gracefully.")
 
 

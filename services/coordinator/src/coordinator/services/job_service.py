@@ -393,3 +393,83 @@ class JobService:
             for ev in events
         ]
         return items, total
+
+    @staticmethod
+    async def check_and_fail_timed_out_jobs(db: AsyncSession) -> List[str]:
+        """Inspect non-terminal jobs and fail any that exceeded their configured deadlines."""
+        now = datetime.now(timezone.utc)
+        stmt = select(Job).where(
+            Job.status.in_([JobState.RUNNING.value, JobState.SCHEDULED.value])
+        )
+        active_jobs = (await db.execute(stmt)).scalars().all()
+        timed_out_ids: List[str] = []
+
+        for job in active_jobs:
+            reqs = job.requirements or {}
+            timeout_sec = float(reqs.get("timeout_seconds") or 300.0)
+
+            is_timed_out = False
+            timeout_reason = ""
+
+            if job.status == JobState.RUNNING.value:
+                start_ref = job.started_at or job.created_at
+                if start_ref.tzinfo is None:
+                    start_ref = start_ref.replace(tzinfo=timezone.utc)
+                elapsed = (now - start_ref).total_seconds()
+                if elapsed > timeout_sec:
+                    is_timed_out = True
+                    timeout_reason = f"Job execution exceeded deadline timeout ({elapsed:.1f}s > {timeout_sec:.0f}s)"
+
+            elif job.status == JobState.SCHEDULED.value:
+                created_ref = job.created_at
+                if created_ref.tzinfo is None:
+                    created_ref = created_ref.replace(tzinfo=timezone.utc)
+                elapsed = (now - created_ref).total_seconds()
+                grace_period = timeout_sec + 60.0
+                if elapsed > grace_period:
+                    is_timed_out = True
+                    timeout_reason = f"Job scheduled but worker failed to start execution within deadline ({elapsed:.1f}s > {grace_period:.0f}s)"
+
+            if is_timed_out:
+                timed_out_ids.append(job.job_id)
+                assigned_w = job.assigned_worker_id
+
+                job.status = JobState.FAILED.value
+                job.completed_at = now
+                job.result_exit_code = -1
+                job.result_error = timeout_reason
+                job.placement_reason = {"status": "failed", "reason": timeout_reason}
+
+                event = JobEvent(
+                    job_id=job.job_id,
+                    event_type="FAILED",
+                    details={"reason": timeout_reason, "worker_id": assigned_w},
+                    created_at=now,
+                )
+                db.add(event)
+
+                if assigned_w:
+                    await scheduler_engine.release_capacity(db, assigned_w)
+
+                await ws_manager.broadcast(
+                    "job.failed",
+                    {
+                        "job_id": job.job_id,
+                        "status": "FAILED",
+                        "error": timeout_reason,
+                        "worker_id": assigned_w,
+                    },
+                )
+                await ws_manager.broadcast(
+                    "job.updated",
+                    {
+                        "job_id": job.job_id,
+                        "status": "FAILED",
+                        "worker_id": assigned_w,
+                    },
+                )
+
+        if timed_out_ids:
+            await db.commit()
+
+        return timed_out_ids

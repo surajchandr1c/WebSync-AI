@@ -224,15 +224,13 @@ The worker agent will:
 - **Cause:** The coordinator container started, but cannot connect to the PostgreSQL database.
 - **Remediation:** Check that the PostgreSQL service in Railway is healthy and accessible via the internal private network (`postgres.railway.internal`).
 
-### 5. Build Error: `sh: 1: pnpm: not found (exit code: 127)`
-- **Cause:** A custom **Build Command** (such as `pnpm --filter @websync/desktop build` or `pnpm --filter @websync/dashboard build`) was entered into Railway's service settings while using a Dockerfile builder.
-- **Why this happens:** When using a Dockerfile, Railway injects any text in the **Build Command** field into the build container. If the service is running `Dockerfile.coordinator` (Python), `pnpm` is not installed! Even for `Dockerfile.dashboard`, the Dockerfile **already** contains the build step.
-- **Remediation:** In Railway $\to$ Service **Settings** $\to$ **Build**:
-  - Leave the **Build Command** field **EMPTY / BLANK**.
-  - Ensure **Dockerfile Path** points to the correct Dockerfile for that service:
-    - Backend: `infra/docker/Dockerfile.coordinator`
-    - Frontend Dashboard: `infra/docker/Dockerfile.dashboard`
-    - Desktop Web Preview (optional): `infra/docker/Dockerfile.desktop`
+### 5. Build Error: `sh: 1: pnpm: not found (exit code: 127)` or `The executable 'pnpm' could not be found`
+- **Cause 1 (Dockerfile Builder):** A custom **Build Command** (such as `pnpm --filter @websync/dashboard build`) or **Start Command** was entered into Railway's service settings on a service building with `infra/docker/Dockerfile.coordinator` (Python), where Node/pnpm is not installed.
+  - **Remediation:** Leave the **Build Command** field **EMPTY / BLANK** in Railway service settings because the Dockerfiles already encapsulate all dependency installation and compilation steps.
+  - Ensure **Dockerfile Path** points to `infra/docker/Dockerfile.dashboard` for the dashboard service and `infra/docker/Dockerfile.coordinator` for the coordinator service.
+- **Cause 2 (Nixpacks Builder):** If using Railway's default Nixpacks builder without Dockerfiles, Nixpacks uses `nixpacks.toml`. Previously, `nixPkgs = ["nodejs_22", "pnpm"]` failed because `pnpm` is not a standalone top-level nix package.
+  - **Remediation:** In `nixpacks.toml`, `[phases.setup]` now executes `cmds = ["npm install -g pnpm@9.15.4"]` which globally installs and links the pinned pnpm executable into `/usr/local/bin` for both build and runtime stages.
+- **Cause 3 (Accidental Desktop App Deployment):** Trying to deploy `apps/desktop` (Tauri desktop app) to Railway as a server. The desktop app is meant to be run natively on client workstations, not hosted on Railway.
 
 ---
 

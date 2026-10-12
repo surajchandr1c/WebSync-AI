@@ -199,6 +199,15 @@ class DispatcherService:
             logger.warning("Result received for unknown job '%s'", job_id)
             return
 
+        if job.assigned_worker_id and job.assigned_worker_id != worker_id:
+            logger.warning(
+                "Result rejected: Worker '%s' attempted to submit result for job '%s' assigned to '%s'",
+                worker_id,
+                job_id,
+                job.assigned_worker_id,
+            )
+            return
+
         if job.status in (JobState.COMPLETED.value, JobState.FAILED.value, JobState.CANCELLED.value):
             logger.info("Job '%s' is already in terminal state '%s'. Result ignored idempotently.", job_id, job.status)
             return
